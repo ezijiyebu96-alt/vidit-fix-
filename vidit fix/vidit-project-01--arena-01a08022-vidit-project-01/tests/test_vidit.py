@@ -772,11 +772,27 @@ def test_apply_autostart_frozen_windows(monkeypatch, tmp_path: Path) -> None:
     assert calls[-1] == ("del", "Vidit")
 
 
-def test_ears_download_model_graceful(home: Path) -> None:
+def test_ears_download_model_graceful(home: Path, monkeypatch) -> None:
+    """Never touches the network: without faster-whisper it must return None;
+    with it installed the real downloader is monkeypatched out."""
     from vidit.senses.ears import Ears
 
     cfg_get = lambda key, default=None: default  # noqa: E731
     ears = Ears(cfg_get, home / "models", event_bus=EventBus())
     assert ears.resolved_model_size() in ("tiny", "base", "small", "medium", "large-v3")
-    # no faster-whisper installed here -> graceful None, no raise
-    assert ears.download_model() is None
+    try:
+        import faster_whisper.utils as fwu  # noqa: F401
+    except Exception:
+        assert ears.download_model() is None  # deps missing -> graceful
+        return
+
+    def fake_dl(size, output_dir=None):
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "model.bin").write_bytes(b"x")
+        return str(out)
+
+    monkeypatch.setattr(fwu, "download_model", fake_dl)
+    got = ears.download_model()
+    assert got and got.endswith(f"mdl-{ears.resolved_model_size()}")
+    assert ears.model_downloaded()  # preload() will now use the local folder
