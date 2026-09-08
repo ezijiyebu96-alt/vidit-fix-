@@ -832,24 +832,26 @@ def test_open_tool_website_fallback(home: Path) -> None:
             or "Couldn't" in res.output), res.output
 
 
-def test_bubble_safe_renders_broken_messages(vidit: Vidit) -> None:
-    """A message that would break the markdown renderer shows as plain text."""
+def test_bubble_safe_renders_broken_messages() -> None:
+    """A message that breaks the markdown renderer degrades to plain text
+    (Qt-free: exercised via the class without widget construction)."""
     try:
-        from PyQt5.QtWidgets import QApplication
-    except Exception:  # noqa: BLE001 - headless box without Qt system libs
+        from vidit.ui import chat_window as cw
+    except Exception:  # noqa: BLE001 - headless Linux lacks Qt system libs
         pytest.skip("Qt system libraries unavailable in this environment")
-    import os as _os
 
-    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt5.QtCore import QCoreApplication
+    win = cw.ChatWindow.__new__(cw.ChatWindow)  # bypass Qt widget __init__
 
-    if QCoreApplication.instance() is None:
-        QApplication(["vidit-test"])
-    vidit.config.set("model.backend", "echo")
-    from vidit.ui.chat_window import ChatWindow
+    def boom(_m, _highlight=""):
+        raise ValueError("renderer exploded")
 
-    win = ChatWindow(vidit)
+    win._bubble = boom
     poison = {"role": "assistant", "content": "\x00broken\x1b[31m", "created_at": time.time(), "id": 0}
     html_out = win._bubble_safe(poison)
-    assert isinstance(html_out, str) and html_out  # something sensible came out
-    win.close()
+    assert isinstance(html_out, str) and "broken" in html_out  # escaped fallback shown
+
+    def fine(_m, _highlight=""):
+        return "<div>ok</div>"
+
+    win._bubble = fine
+    assert win._bubble_safe(poison) == "<div>ok</div>"  # healthy path untouched
