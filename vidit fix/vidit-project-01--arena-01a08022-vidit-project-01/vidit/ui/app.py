@@ -286,6 +286,23 @@ class ViditApp:
             self.hud.orb.set_speaking(speaking)
             self.hud.wave.set_active(speaking)
 
+    def _lift_safe_mode(self) -> None:
+        """45 s without a crash → voice comes back on by itself."""
+        if not self.safe_mode:
+            return
+        self.safe_mode = False
+        try:
+            self.vidit.quiet = False
+            self.vidit.config.set("voice.enabled", True, save=True)
+            # Config.set does not emit settings.changed — re-detect explicitly.
+            self.vidit.voice._detect_engine()
+        except Exception:  # noqa: BLE001 — never crash while recovering
+            log.exception("lifting safe mode failed")
+        self.chat.status_label.setText(
+            "Voice is back on ✔ (safe mode auto-cleared — Vidit stayed healthy). "
+            "Click 🎤 and just talk.")
+        log.info("safe mode auto-cleared after 45 s stable — voice re-enabled")
+
     def _on_setting(self, key: str, value: Any) -> None:
         if key.startswith("appearance") or key.startswith("accessibility"):
             self.apply_theme()
@@ -367,6 +384,10 @@ class ViditApp:
             self.chat.status_label.setText(
                 "Safe mode: voice is off because the last run crashed early — chat works. "
                 "Quit and reopen Vidit to try voice again.")
+            # Auto-recover: if Vidit is still alive and healthy after 45 s,
+            # the crash clearly isn't reproducible — turn voice back on by
+            # itself instead of staying mute for the whole session.
+            QTimer.singleShot(45000, safe_slot(self._lift_safe_mode))
         elif activation in ("wake_word", "always") and self.vidit.ears.available():
             # Warm up in the background (download once), then start listening
             # from the MAIN thread (CTranslate2 must be built there).

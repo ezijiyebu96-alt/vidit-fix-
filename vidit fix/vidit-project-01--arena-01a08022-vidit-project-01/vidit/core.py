@@ -385,6 +385,9 @@ class Vidit:
             return
         reply = self.chat(text)
         self.bus.emit("message.voice", text=text, reply=reply.to_dict())
+        # Speak the answer out loud — this is the whole point of a voice
+        # chat. (A bug here used to leave the reply text-only and silent.)
+        self._speak(reply.answer)
 
     def start_listening(self) -> bool:
         if not self.permissions.check(Capability.MICROPHONE, "to listen for your voice and my wake word"):

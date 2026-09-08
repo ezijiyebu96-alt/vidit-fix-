@@ -890,3 +890,110 @@ def test_chat_thread_reaped_not_dangling() -> None:
     win._worker = object()
     win.shutdown_worker(ms=10)  # must swallow the RuntimeError
     assert win._thread is None and win._worker is None
+
+
+# --------------------------------------------------------------- voice loop
+# Regression round (mic "worked but never answered / never spoke"):
+#   bug 1: _speak_now guarded pyttsx3 on self._pyttsx, which _detect_engine
+#          deliberately leaves None (lazy COM init) → dead branch, no sound.
+#   bug 2: core._on_heard never spoke the reply (text-only voice chats).
+#   bug 3: manual mic sessions still demanded the wake word → silence.
+#   bug 4: safe mode muted Vidit for the whole session (no auto-recovery).
+
+def test_pyttsx3_lazy_init_actually_speaks(tmp_path, monkeypatch):
+    """End-to-end: engine detected → say() → worker lazy-inits → engine talks."""
+    import sys
+    import types
+
+    from vidit.senses.voice import Voice
+
+    calls = {}
+
+    class FakeEngine:
+        def setProperty(self, key, value):
+            calls.setdefault(key, []).append(value)
+
+        def getProperty(self, key):
+            return [] if key == "voices" else None
+
+        def say(self, text):
+            calls["said"] = text
+
+        def runAndWait(self):
+            calls["ran"] = True
+
+        def stop(self):
+            calls["stopped"] = True
+
+    fake = types.ModuleType("pyttsx3")
+    fake.init = lambda: FakeEngine()
+    monkeypatch.setitem(sys.modules, "pyttsx3", fake)  # hermetic: no real SAPI/espeak
+
+    cfg = {
+        "voice.tts_engine": "auto",
+        "voice.enabled": True,
+        "voice.profile": "young",
+        "voice.speed": 1.0,
+        "voice.pitch": 1.0,
+        "voice.volume": 0.9,
+    }
+    v = Voice(cfg.get, tmp_path)  # tmp home: no piper .onnx → pyttsx3 is chosen
+    assert v.engine_name == "pyttsx3"
+    assert v._pyttsx is None  # lazy by design — the worker must create it
+
+    v.say("hello there", blocking=False)
+    assert v._thread is not None
+    v._queue.put(None)  # poison pill so the worker exits after this item
+    v._thread.join(timeout=15)
+    assert not v._thread.is_alive()
+    assert calls.get("said") == "hello there"
+    assert calls.get("ran") is True
+    assert any(v > 0 for v in calls.get("rate", []))
+
+
+def test_voice_reply_is_spoken_by_core():
+    """bug 2: _on_heard must speak the answer, not just emit it on the bus."""
+    import inspect
+    from pathlib import Path
+
+    core_src = (Path(__file__).resolve().parent.parent / "vidit" / "core.py").read_text(
+        encoding="utf-8")
+    handler = core_src.split("def _on_heard", 1)[1].split("\n    def ", 1)[0]
+    assert "self._speak(reply.answer)" in handler
+    assert 'self.bus.emit("message.voice"' in handler  # chat window still updated
+
+
+def test_mic_click_starts_conversational_session():
+    """bug 3: clicking 🎤 must answer speech WITHOUT the wake word."""
+    import inspect
+    from pathlib import Path
+
+    base = Path(__file__).resolve().parent.parent / "vidit" / "ui"
+    start = inspect.getsource(_chat_window_cls(base)._start_listening)
+    assert "awake_until = time.time()" in start  # conversational session
+
+    status = inspect.getsource(_chat_window_cls(base)._update_status)
+    assert "just talk to me" in status  # honest conversational status
+
+
+def _chat_window_cls(base):
+    try:
+        from vidit.ui import chat_window as cw
+    except Exception:  # noqa: BLE001 - headless Linux lacks Qt system libs
+        pytest.skip("Qt system libraries unavailable in this environment")
+
+    return cw.ChatWindow
+
+
+def test_safe_mode_auto_recovers_voice():
+    """bug 4: after 45 s stable, safe mode lifts itself and voice returns."""
+    import inspect
+    from pathlib import Path
+
+    app_src = (Path(__file__).resolve().parent.parent / "vidit" / "ui" / "app.py").read_text(
+        encoding="utf-8")
+    assert "singleShot(45000, safe_slot(self._lift_safe_mode))" in app_src
+    lift = app_src.split("def _lift_safe_mode", 1)[1].split("\n    def ", 1)[0]
+    assert 'self.vidit.quiet = False' in lift
+    assert 'self.vidit.config.set("voice.enabled", True' in lift
+    assert "voice._detect_engine()" in lift

@@ -217,7 +217,11 @@ class Voice:
         try:
             if self.engine_name == "piper" and self._piper_cmd:
                 self._speak_piper(text, rate, volume)
-            elif self.engine_name == "pyttsx3" and self._pyttsx:
+            elif self.engine_name == "pyttsx3":
+                # NOTE: no `and self._pyttsx` here — _detect_engine leaves the
+                # engine as None on purpose (lazy COM init must happen on this
+                # worker thread); _speak_pyttsx() creates it. Guarding on it
+                # made the whole pyttsx3 branch dead code → Vidit never spoke.
                 self._speak_pyttsx(text, rate, volume)
         finally:
             self._speaking.clear()

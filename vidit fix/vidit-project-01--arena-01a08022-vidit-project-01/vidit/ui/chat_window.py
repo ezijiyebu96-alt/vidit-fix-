@@ -87,6 +87,7 @@ class ChatWindow(QWidget):
         self._speaking = False
         self._ears_listening = False
         self._transcribing = False
+        self._heard_something = False
         self._mic_error = ""
         self._build()
         self._load_conversations()
@@ -556,6 +557,10 @@ class ChatWindow(QWidget):
         # the listening state. If the Whisper model failed to preload, warn
         # softly (non-blocking) — the mic still listens for wake words… which
         # need the model, so be honest that transcripts will be skipped.
+        # The user clicked the mic ON PURPOSE: treat this whole session as a
+        # conversation — whatever they say is answered WITHOUT needing to
+        # first say "Hey Vidit" (ears.awake_until drives ears._handle_transcript).
+        self.vidit.ears.awake_until = time.time() + 86400.0
         st = self.vidit.ears.status()
         if not st.get("model_ready") and st.get("error"):
             self.status_label.setText(f"ears not ready: {st['error'][:80]}")
@@ -573,9 +578,19 @@ class ChatWindow(QWidget):
         self._set_mic_state("listening" if on else "idle")
         self._update_wave()
         self._update_status()
+        if on:
+            self._heard_something = False
+            QTimer.singleShot(12000, self._no_audio_hint)
+
+    def _no_audio_hint(self) -> None:
+        """12 s of total silence while listening — probably the wrong mic."""
+        if self._ears_listening and not self._heard_something:
+            self.status_label.setText(
+                "I can't hear anything — check your mic (Windows Settings → Sound → Input)")
 
     def on_utterance(self, seconds: float) -> None:
         """You stopped talking — Whisper is now transcribing the utterance."""
+        self._heard_something = True
         if self._ears_listening:
             self._transcribing = True
             self._set_mic_state("processing")
@@ -585,6 +600,14 @@ class ChatWindow(QWidget):
         self._transcribing = False
         self._set_mic_state("listening" if self._ears_listening else "idle")
         if awake:
+            # Your spoken words appear as a bubble as soon as they reach
+            # memory (core stores them while the brain is thinking).
+            if text.strip():
+                try:
+                    self._messages = self.vidit.memory.messages(self.vidit.conversation_id)
+                    self._render_all()
+                except Exception:  # noqa: BLE001 — display only, never fatal
+                    pass
             self._update_status()
             self.status_label.setText("heard you — thinking…")
 
@@ -622,7 +645,12 @@ class ChatWindow(QWidget):
         elif self._transcribing:
             self.status_label.setText("heard you — transcribing…")
         elif self._ears_listening:
-            self.status_label.setText("listening… say my name")
+            try:
+                conversational = self.vidit.ears.status().get("awake", False)
+            except Exception:  # noqa: BLE001
+                conversational = False
+            self.status_label.setText(
+                "listening… just talk to me" if conversational else "listening… say \"hey vidit\"")
         else:
             self.status_label.setText("here with you")
 
