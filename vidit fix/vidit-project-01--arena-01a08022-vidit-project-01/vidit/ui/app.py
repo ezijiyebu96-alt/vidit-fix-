@@ -119,13 +119,13 @@ class ViditApp:
         bus.on("ears.utterance", safe_slot(lambda t, p: self.bridge.utterance.emit(float(p.get("seconds", 0.0)))))
         bus.on("ears.transcript", safe_slot(lambda t, p: self.bridge.transcript.emit(p.get("text", ""), bool(p.get("woke")), bool(p.get("awake")))))
 
-        self.orb.openChat.connect(lambda: self.set_mode("chat"))
-        self.orb.openHud.connect(lambda: self.set_mode("hud"))
-        self.orb.openDashboard.connect(self.show_dashboard)
-        self.orb.openSettings.connect(self.show_settings)
-        self.orb.setMode.connect(self._orb_mode)
-        self.orb.quitRequested.connect(self.quit)
-        self.chat.replyReady.connect(lambda r: self.orb.show_caption(r.text))
+        self.orb.openChat.connect(safe_slot(lambda: self.set_mode("chat")))
+        self.orb.openHud.connect(safe_slot(lambda: self.set_mode("hud")))
+        self.orb.openDashboard.connect(safe_slot(self.show_dashboard))
+        self.orb.openSettings.connect(safe_slot(self.show_settings))
+        self.orb.setMode.connect(safe_slot(self._orb_mode))
+        self.orb.quitRequested.connect(safe_slot(self.quit))
+        self.chat.replyReady.connect(safe_slot(lambda r: self.orb.show_caption(r.text)))
 
     # --------------------------------------------------------------- tray
     def _make_tray(self) -> Optional[QSystemTrayIcon]:
@@ -136,24 +136,24 @@ class ViditApp:
         for label, mode in (("Companion orb", "orb"), ("Chat window", "chat"), ("HUD overlay", "hud"), ("Full-screen", "fullscreen"),
                             ("Picture-in-Picture", "pip"), ("Stealth mode", "stealth")):
             act = QAction(label, menu)
-            act.triggered.connect(lambda _, m=mode: self.set_mode(m))
+            act.triggered.connect(safe_slot(lambda _, m=mode: self.set_mode(m)))
             menu.addAction(act)
         menu.addSeparator()
         dash = QAction("Soul dashboard", menu)
-        dash.triggered.connect(self.show_dashboard)
+        dash.triggered.connect(safe_slot(self.show_dashboard))
         menu.addAction(dash)
         cfg = QAction("Settings", menu)
-        cfg.triggered.connect(self.show_settings)
+        cfg.triggered.connect(safe_slot(self.show_settings))
         menu.addAction(cfg)
         stop = QAction("STOP", menu)
-        stop.triggered.connect(self.vidit.stop)
+        stop.triggered.connect(safe_slot(self.vidit.stop))
         menu.addAction(stop)
         menu.addSeparator()
         quit_act = QAction("Quit", menu)
-        quit_act.triggered.connect(self.quit)
+        quit_act.triggered.connect(safe_slot(self.quit))
         menu.addAction(quit_act)
         tray.setContextMenu(menu)
-        tray.activated.connect(lambda reason: self.set_mode("chat") if reason == QSystemTrayIcon.Trigger else None)
+        tray.activated.connect(safe_slot(lambda reason: self.set_mode("chat") if reason == QSystemTrayIcon.Trigger else None))
         tray.setToolTip("Vidit")
         tray.show()
         return tray
@@ -194,8 +194,8 @@ class ViditApp:
         elif mode == "hud":
             if self.hud is None:
                 self.hud = HudOverlay(self.vidit)
-                self.hud.closed.connect(lambda: self.set_mode("orb"))
-                self.hud.command.connect(self._hud_command)
+                self.hud.closed.connect(safe_slot(lambda: self.set_mode("orb")))
+                self.hud.command.connect(safe_slot(self._hud_command))
             self.chat.hide()
             self.orb.hide()
             self.hud.show()
@@ -261,7 +261,7 @@ class ViditApp:
         if self.mode == "stealth":
             self.set_mode("chat")
         self.orb.orb.set_thinking(True)
-        QTimer.singleShot(1500, lambda: self.orb.orb.set_thinking(False) if not self._voice_thinking else None)
+        QTimer.singleShot(1500, safe_slot(lambda: self.orb.orb.set_thinking(False) if not self._voice_thinking else None))
 
     def _on_listening(self, on: bool) -> None:
         """Ears opened/closed (from ears.started / ears.stopped events)."""
@@ -310,7 +310,7 @@ class ViditApp:
             self.vidit.export_everything()
             self.vidit.self_model.leave()
             self._toast("He left, gently. His memories are saved in the exports folder.")
-            QTimer.singleShot(4000, self.quit)
+            QTimer.singleShot(4000, safe_slot(self.quit))
 
     def _toast(self, text: str) -> None:
         style = self.vidit.config.get("appearance.notification_style", "toast")

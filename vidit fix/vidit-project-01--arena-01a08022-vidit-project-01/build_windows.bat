@@ -193,6 +193,7 @@ if errorlevel 8 (
     echo  [X] Could not copy the app into the release folder.
     goto :fail
 )
+copy /y GET_VIDIT_REPORT.bat "release\Vidit\GET_VIDIT_REPORT.bat" >nul
 for %%A in ("release\Vidit\Vidit.exe") do echo         Vidit.exe size: %%~zA bytes
 "%VPY%" packaging\check_exe.py "release\Vidit\Vidit.exe" --version
 if errorlevel 1 goto :smoke_warn

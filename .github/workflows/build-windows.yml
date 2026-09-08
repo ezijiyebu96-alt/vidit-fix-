@@ -76,6 +76,7 @@ jobs:
         working-directory: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01
         shell: pwsh
         run: |
+          Copy-Item GET_VIDIT_REPORT.bat dist/Vidit/ -Force
           Compress-Archive -Path dist/Vidit -DestinationPath Vidit-Windows11-x64.zip -Force
           Get-Item Vidit-Windows11-x64.zip | Select-Object Name, Length
 
