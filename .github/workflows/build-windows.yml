@@ -20,6 +20,8 @@ concurrency:
 jobs:
   windows-build:
     runs-on: windows-latest
+    permissions:
+      contents: write   # publish the built app to the Releases page
     defaults:
       run:
         shell: bash
@@ -83,3 +85,16 @@ jobs:
           name: Vidit-Windows11-x64
           path: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01/Vidit-Windows11-x64.zip
           if-no-files-found: error
+
+      - name: Publish to the Releases page (always-latest download link)
+        if: success() && github.event_name != 'pull_request'
+        working-directory: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view windows-build >/dev/null 2>&1 || \
+            gh release create windows-build --prerelease \
+              --title "Vidit — Windows 11 build (latest)" \
+              --notes "Latest automatic build of Vidit.exe. Download Vidit-Windows11-x64.zip, unzip, double-click Vidit.exe (SmartScreen: More info → Run anyway). Data lives in %LOCALAPPDATA%\Vidit."
+          gh release upload windows-build Vidit-Windows11-x64.zip --clobber
+          echo "Published to: $(gh release view windows-build --json url --jq .url)"

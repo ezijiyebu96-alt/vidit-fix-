@@ -35,13 +35,19 @@ py -m venv .venv-win
 ```
 
 ### EXE location
+- **Easiest — the Releases page:** every successful CI build publishes the app
+  to **https://github.com/ezijiyebu96-alt/vidit-fix-/releases** (release
+  "windows-build") — download `Vidit-Windows11-x64.zip`, unzip, run `Vidit.exe`.
+  No sign-in needed for a public repo.
 - Local build: **`release\Vidit\Vidit.exe`** (copy the whole `Vidit` folder).
 - CI build: artifact **`Vidit-Windows11-x64.zip`** from the `build-windows`
   GitHub Actions run (workflow `.github/workflows/build-windows.yml`,
-  `windows-latest`) — unzip anywhere and double-click `Vidit.exe`.
+  `windows-latest`).
 
 `Vidit.spec` is **onedir** (fast start, clean updates, no temp-extract), windowed
 (`console=False`), UPX disabled (avoids antivirus false positives).
+If `build_windows.bat` fails on your PC, read the `[X]` line it shows (the
+window stays open) and the full PyInstaller output in `build_log.txt`.
 
 ## 3. First launch
 
