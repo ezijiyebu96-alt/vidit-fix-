@@ -1,0 +1,111 @@
+"""Small shared helpers."""
+from __future__ import annotations
+
+import logging
+import logging.handlers
+import re
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable
+
+
+def setup_logging(logs_dir: Path, level: int = logging.INFO) -> None:
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger()
+    if any(getattr(h, "_vidit", False) for h in root.handlers):
+        return
+    root.setLevel(level)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        logs_dir / "vidit.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setFormatter(fmt)
+    file_handler._vidit = True  # type: ignore[attr-defined]
+    root.addHandler(file_handler)
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.WARNING)
+    console.setFormatter(fmt)
+    console._vidit = True  # type: ignore[attr-defined]
+    root.addHandler(console)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def now_ts() -> float:
+    return time.time()
+
+
+def human_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def human_size(num_bytes: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if num_bytes < 1024:
+            return f"{num_bytes:.1f} {unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f} PB"
+
+
+_WORD_RE = re.compile(r"[A-Za-z0-9\u0900-\u097F']+")
+
+STOPWORDS = frozenset(
+    """a an the and or but if then so of to in on at for from by with about as into
+    like through after over between out against during without before under around
+    among is are was were be been being am do does did doing have has had having i me
+    my myself we our ours you your yours he him his she her hers it its they them their
+    what which who whom this that these those will would can could should shall may
+    might must not no nor only own same too very just also than there here when where
+    why how all any both each few more most other some such""".split()
+)
+
+
+def tokenize(text: str) -> list[str]:
+    return [w.lower() for w in _WORD_RE.findall(text)]
+
+
+def keywords(text: str, limit: int | None = None) -> list[str]:
+    seen: dict[str, None] = {}
+    for word in tokenize(text):
+        if len(word) > 2 and word not in STOPWORDS:
+            seen.setdefault(word, None)
+    words = list(seen)
+    return words[:limit] if limit else words
+
+
+def truncate(text: str, limit: int = 200) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
+
+
+def safe_filename(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "file"
+
+
+def is_within(path: Path, roots: Iterable[Path]) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(Path(root).resolve())
+            return True
+        except (ValueError, OSError):
+            continue
+    return False

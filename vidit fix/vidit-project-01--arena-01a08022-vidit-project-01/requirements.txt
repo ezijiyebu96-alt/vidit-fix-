@@ -1,0 +1,8 @@
+# Core (required) — the body and the link to the local brain
+PyQt5>=5.15
+requests>=2.31
+psutil>=5.9
+markdown>=3.5
+
+# Testing
+pytest>=7.0
