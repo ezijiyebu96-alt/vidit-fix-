@@ -855,3 +855,37 @@ def test_bubble_safe_renders_broken_messages() -> None:
 
     win._bubble = fine
     assert win._bubble_safe(poison) == "<div>ok</div>"  # healthy path untouched
+
+
+def test_chat_thread_reaped_not_dangling() -> None:
+    """The second-message crash: send() guarded with self._thread.isRunning()
+    while the QThread was deleteLater()'d -> 'wrapped C/C++ object deleted'.
+    The reaper must drop the references, and the guard must use _busy."""
+    try:
+        from vidit.ui import chat_window as cw
+    except Exception:  # noqa: BLE001 - headless Linux lacks Qt system libs
+        pytest.skip("Qt system libraries unavailable in this environment")
+
+    win = cw.ChatWindow.__new__(cw.ChatWindow)  # no Qt __init__
+
+    class DeadThread:  # simulates a deleteLater()'d QThread
+        def isRunning(self):
+            raise RuntimeError("wrapped C/C++ object of type QThread has been deleted")
+
+    win._thread = DeadThread()
+    win._worker = object()
+    win._reap_chat_thread()  # connected to thread.finished
+    assert win._thread is None and win._worker is None  # no dangling refs
+
+    # the send() guard must rely on _busy (plain bool), never the dead thread:
+    import inspect
+
+    guard = inspect.getsource(cw.ChatWindow.send)
+    assert "self._busy" in guard
+    assert "self._thread.isRunning()" not in guard
+
+    # shutdown_worker tolerates a dead thread without raising:
+    win._thread = DeadThread()
+    win._worker = object()
+    win.shutdown_worker(ms=10)  # must swallow the RuntimeError
+    assert win._thread is None and win._worker is None
