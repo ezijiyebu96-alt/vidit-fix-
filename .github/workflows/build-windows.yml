@@ -12,6 +12,11 @@ on:
   pull_request:
     branches: [main]
 
+# A stuck or superseded build must not block the next one.
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows-build:
     runs-on: windows-latest
@@ -56,16 +61,13 @@ jobs:
           test -f dist/Vidit/Vidit.exe || { echo "FAIL: Vidit.exe missing"; exit 1; }
           test -d dist/Vidit/_internal/vidit/ui/assets || { echo "FAIL: UI assets not bundled"; exit 1; }
           test -f dist/Vidit/_internal/AUTONOMY.md || { echo "FAIL: AUTONOMY.md not bundled"; exit 1; }
+          echo "--- dist contents (diagnostics) ---"
+          ls -la dist/Vidit | head -20
           size=$(stat -c%s dist/Vidit/Vidit.exe)
           echo "Vidit.exe launcher size: $size bytes"
-          # --version must exit 0 (windowed app: stdout is suppressed, code matters)
-          ./dist/Vidit/Vidit.exe --version
-          echo "version exit: $?"
-          # --doctor must exit 0 (all required modules bundled)
-          ./dist/Vidit/Vidit.exe --doctor
-          code=$?
-          echo "doctor exit: $code"
-          test "$code" -eq 0 || { echo "FAIL: doctor exit code $code"; exit 1; }
+          # Hard-timeout wrappers: a windowed app can never hang the job.
+          python packaging/check_exe.py dist/Vidit/Vidit.exe --version
+          python packaging/check_exe.py dist/Vidit/Vidit.exe --doctor
           echo "PACKAGING CHECKS PASSED"
 
       - name: Package Vidit-Windows11-x64.zip

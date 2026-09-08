@@ -53,9 +53,11 @@ py -m venv .venv-win
    read-only `Program Files` install is fine.
 4. Voice: on first listening use, the offline whisper model downloads once
    (needs internet **once**), then everything runs 100 % offline.
-5. Check health anytime: `Vidit.exe --doctor` (run from a terminal to see the
-   report; the packaged app is windowed so stdout is hidden — use the exit
-   code, or run from source for the full printout). `Vidit.exe --version` too.
+5. Check health anytime: `Vidit.exe --doctor` from a terminal (Command
+   Prompt / PowerShell — the app attaches to the console and prints the
+   report there; exit code 0 = healthy). `Vidit.exe --version` works the
+   same way. If the app ever crashes on start, the traceback is written to
+   `%LOCALAPPDATA%\Vidit\logs\vidit_crash.log` instead of dying silently.
 
 ## 4. Windows permissions & accessibility
 
