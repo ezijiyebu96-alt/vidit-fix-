@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import sys
+import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -361,3 +364,365 @@ def test_wake_word_stripping(home: Path) -> None:
     assert not woke
     cfg.set("general.wake_word", "jarvis")
     assert ears.strip_wake_word("ok jarvis open notes")[1]
+
+
+# -------------------------------------------- ears preload / model_ready path
+class _FakeSegment:
+    text = " hey vidit what time is it "
+
+
+class _FakeWhisperModel:
+    """Records construction details; rejects int8 to exercise the fallback."""
+
+    calls: list = []
+
+    def __init__(self, size, device=None, compute_type=None, download_root=None,
+                 cpu_threads=None, num_workers=None):
+        _FakeWhisperModel.calls.append({
+            "thread": threading.current_thread().name, "size": size, "device": device,
+            "compute_type": compute_type, "cpu_threads": cpu_threads,
+            "num_workers": num_workers,
+        })
+        if compute_type == "int8":
+            raise RuntimeError("this machine cannot do int8")
+
+    def transcribe(self, audio, language=None, vad_filter=False, beam_size=None):
+        return (iter([_FakeSegment()]), None)
+
+
+@pytest.fixture()
+def fake_ears_deps(monkeypatch) -> type:
+    """Fake faster_whisper + sounddevice so no download and no mic is needed."""
+    _FakeWhisperModel.calls = []
+    fw = types.ModuleType("faster_whisper")
+    fw.WhisperModel = _FakeWhisperModel
+    sd = types.ModuleType("sounddevice")
+    sd.InputStream = object
+    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    return _FakeWhisperModel
+
+
+def test_ears_preload_model_ready_and_worker_never_loads(home: Path, fake_ears_deps: type) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
+    cfg = Config(home)
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    assert ears.available()
+    assert ears.status()["model_ready"] is False
+
+    # The live-mic path must NEVER construct the model (the Windows crash bug).
+    assert ears._transcribe_array(np.zeros(16000, dtype=np.float32)) == ""
+    assert fake_ears_deps.calls == []
+
+    # preload() on the calling (main) thread: int8 fails -> falls back to
+    # int8_float16 (two constructor attempts, one successful model).
+    assert ears.preload() is True
+    assert ears.status()["model_ready"] is True
+    assert len(fake_ears_deps.calls) == 2
+    assert [c["compute_type"] for c in fake_ears_deps.calls] == ["int8", "int8_float16"]
+    assert all(c["thread"] == threading.main_thread().name for c in fake_ears_deps.calls)
+    good = fake_ears_deps.calls[-1]
+    assert good["cpu_threads"] in (2, 4)  # adaptive: 2 on low-RAM/low-core machines
+    assert good["num_workers"] == 1
+
+    # preload is idempotent — no further construction attempts.
+    ears.preload()
+    assert len(fake_ears_deps.calls) == 2
+
+    # reload_model() releases the model; the worker still refuses to rebuild.
+    ears.reload_model()
+    assert ears.status()["model_ready"] is False
+    assert ears._transcribe_array(np.zeros(16000, dtype=np.float32)) == ""
+    assert len(fake_ears_deps.calls) == 2
+
+
+def test_ears_transcribe_file_routes_through_preload(home: Path, fake_ears_deps: type) -> None:
+    pytest.importorskip("numpy")
+    cfg = Config(home)
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    out = ears.transcribe_file(Path("clip.wav"))
+    assert out == "hey vidit what time is it"
+    assert ears.status()["model_ready"] is True
+    assert all(c["thread"] == threading.main_thread().name for c in fake_ears_deps.calls)
+
+
+# ------------------------------------------------- low-RAM model selection
+def _ram(monkeypatch: pytest.MonkeyPatch, total_gb: float) -> None:
+    import psutil
+
+    class _VM:
+        total = int(total_gb * 1e9)
+
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: _VM())
+
+
+def test_low_ram_model_selection(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """tiny/base on small machines; 'small' stays only with enough RAM;
+    explicit non-'small' choices are never second-guessed."""
+    pytest.importorskip("psutil")
+    from vidit.senses.ears import Ears as _Ears
+
+    cfg = Config(home)
+
+    # 4 GB machine: the legacy default "small" is downgraded to "base", 2 threads
+    _ram(monkeypatch, 4.0)
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    assert ears._resolve_model_size()[0] == "base"
+    assert ears._resolve_model_size()[1] == 2
+
+    # 2 GB machine with "auto": tiny
+    _ram(monkeypatch, 2.0)
+    cfg.set("voice.stt_model", "auto")
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    assert ears._resolve_model_size()[0] == "tiny"
+
+    # 16 GB machine with "auto": small; threads follow the core-count guard
+    _ram(monkeypatch, 16.0)
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    size, threads, auto = ears._resolve_model_size()
+    import os as _os
+
+    expected_threads = 2 if (_os.cpu_count() or 4) <= 2 else 4
+    assert (size, threads, auto) == ("small", expected_threads, True)
+
+    # 16 GB with an explicit pin: respected as-is, not "auto"
+    cfg.set("voice.stt_model", "base")
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    size, _threads, auto = ears._resolve_model_size()
+    assert (size, auto) == ("base", False)
+
+    # unload-on-stop: low RAM auto-unloads, high RAM keeps it, explicit wins
+    _ram(monkeypatch, 4.0)
+    cfg.set("voice.stt_model", "auto")
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    ears._effective_model = "tiny"
+    ears._model = object()
+    ears._model_ready.set()
+    ears.stop()
+    assert ears._model is None and not ears._model_ready.is_set()
+
+    _ram(monkeypatch, 16.0)
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    ears._model = object()
+    ears._model_ready.set()
+    ears.stop()
+    assert ears._model is not None and ears._model_ready.is_set()
+
+    cfg.set("voice.unload_model_when_idle", True)
+    ears = Ears(cfg.get, home / "models", event_bus=EventBus())
+    ears._model = object()
+    ears._model_ready.set()
+    ears.stop()
+    assert ears._model is None  # explicit override beats plenty-of-RAM
+
+
+# ------------------------------------------------------------- autonomy
+def test_goal_scheduling_math() -> None:
+    from vidit.autonomy import next_run_for
+
+    now = time.time()
+    daily = next_run_for("daily", "08:00", now)
+    assert daily > now  # never in the past
+    import datetime as dt
+
+    nxt = dt.datetime.fromtimestamp(daily)
+    assert (nxt.hour, nxt.minute) == (8, 0)
+    late = next_run_for("daily", "08:00", dt.datetime(2026, 1, 1, 23, 0).timestamp())
+    assert dt.datetime.fromtimestamp(late).day == 2  # rolls to tomorrow
+    soon = next_run_for("interval", "600", now)
+    assert abs(soon - (now + 600)) < 2
+    assert next_run_for("interval", "1", now) >= now + 300  # 5-min floor
+    assert next_run_for("once", "", 0) == 0
+
+
+def test_goal_lifecycle_and_tick(vidit: Vidit) -> None:
+    vidit.llm.json = lambda *a, **k: [{"tool": "list_goals", "args": "", "why": "check"}]
+    gid = vidit.memory.add_goal("brief me", "once", "", next_run=time.time() - 10)
+    reports = vidit.autonomy.tick()
+    assert len(reports) == 1 and "Goal #" in reports[0]
+    goal = vidit.memory.goal(gid)
+    assert goal["status"] == "done" and goal["last_run"]
+    assert vidit.autonomy.tick() == []  # nothing due any more
+    assert any(a["action"].startswith("step") for a in vidit.memory.recent_actions())
+
+
+def test_daily_goal_reschedules(vidit: Vidit) -> None:
+    vidit.llm.json = lambda *a, **k: []
+    vidit.memory.add_goal("morning brief", "daily", "23:59", next_run=time.time() - 10)
+    vidit.autonomy.tick()  # runs; plan empty + not a file goal → report only
+    goal = vidit.memory.goals()[0]
+    assert goal["status"] == "active"
+    assert goal["next_run"] > time.time()  # rescheduled to tomorrow
+
+
+def test_risk_levels_guardian_block(home: Path) -> None:
+    from vidit.guardian import PermissionRequest
+    from vidit.guardian.permissions import risk_level
+
+    assert risk_level(Capability.READ_FILES, "look around") == "auto"
+    assert risk_level(Capability.WRITE_FILES, "save a note", target=str(home / "x.txt")) == "auto"
+    assert risk_level(Capability.WRITE_FILES, "save a note") == "ask"
+    (home / "lots").mkdir(parents=True)
+    assert risk_level(Capability.DELETE_FILES, "clean up", target=str(home / "lots")) == "always"
+    assert risk_level(Capability.DELETE_FILES, "remove my draft", target=str(home / "x.txt")) == "ask"
+    assert risk_level(Capability.INTERNET, "enter my password somewhere") == "always"
+
+    asked = []
+
+    def prompter(req: PermissionRequest) -> Decision:
+        asked.append(req.capability)
+        return Decision.ALLOW_ALWAYS  # user always says yes — still must be ASKED
+
+    cfg = Config(home)
+    perms = Permissions(cfg, event_bus=EventBus(), prompter=prompter)
+    # 🔴 bypasses session grants AND never persists an "always" policy:
+    assert perms.check(Capability.DELETE_FILES, "clean up", target=str(home / "lots"))
+    assert perms.check(Capability.DELETE_FILES, "clean up", target=str(home / "lots"))
+    assert asked == [Capability.DELETE_FILES, Capability.DELETE_FILES]  # asked EVERY time
+    assert perms.policy(Capability.DELETE_FILES) != "always"
+
+    # autonomy.level=auto covers 🟢 only — never 🟡/🔴:
+    cfg.set("autonomy.level", "auto")
+    assert perms.check(Capability.READ_FILES, "peek around")  # 🟢 automatic
+    assert asked == [Capability.DELETE_FILES, Capability.DELETE_FILES]  # no prompt needed
+    assert perms.check(Capability.WRITE_FILES, "make a file")  # 🟡 still asks
+    assert asked[-1] == Capability.WRITE_FILES
+    assert perms.check(Capability.DELETE_FILES, "clean up", target=str(home / "lots"))  # 🔴 still asks
+
+
+def test_stop_cancels_chain(vidit: Vidit) -> None:
+    from vidit.tools.base import Tool, ToolResult
+
+    vidit.llm.json = lambda *a, **k: [{"tool": "autostop", "args": "", "why": ""},
+                                      {"tool": "list_goals", "args": "", "why": ""}]
+
+    def autostop(args: str, ctx) -> ToolResult:  # noqa: ANN001
+        vidit.permissions.stop()  # user hits STOP mid-chain
+        return ToolResult(True, "step done")
+
+    vidit.tools.register(Tool("autostop", "", "", autostop))
+    gid = vidit.memory.add_goal("do a thing", "once", "", next_run=time.time() - 10)
+    report = vidit.autonomy.run_goal(vidit.memory.goal(gid))
+    assert "Stopped" in report
+    goal = vidit.memory.goal(gid)
+    assert goal["status"] == "paused"
+    actions = [a["action"] for a in vidit.memory.recent_actions()]
+    assert actions == ["step 1: autostop", "chain_stopped"]  # step 2 never ran
+
+    # A fresh goal after STOP is not executed while still stopped:
+    vidit.memory.add_goal("another", "once", "", next_run=time.time() - 10)
+    assert vidit.autonomy.tick() == []
+    vidit.permissions.resume()
+    vidit.llm.json = lambda *a, **k: []
+    assert vidit.autonomy.tick()  # resume → goals flow again
+
+
+def test_organize_dry_run_and_apply(tmp_path: Path) -> None:
+    from vidit.autonomy import apply_organization, plan_organization
+
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    for name in ("report.pdf", "photo.png", "song.mp3", "notes.txt"):
+        (folder / name).write_text("data-" + name, encoding="utf-8")
+    moves = plan_organization(folder)
+    assert {Path(m["from"]).name for m in moves} == {"report.pdf", "photo.png", "song.mp3", "notes.txt"}
+    assert sorted(p.name for p in folder.iterdir()) == ["notes.txt", "photo.png", "report.pdf", "song.mp3"]  # untouched
+    done = apply_organization(folder, moves)
+    assert len(done) == 4
+    assert (folder / "Documents" / "report.pdf").read_text() == "data-report.pdf"
+    assert (folder / "Images" / "photo.png").exists() and (folder / "Audio" / "song.mp3").exists()
+    # no-clobber: planning again + applying must not overwrite
+    (folder / "other.pdf").write_text("two", encoding="utf-8")
+    apply_organization(folder, plan_organization(folder))
+    assert (folder / "Documents" / "report.pdf").read_text() == "data-report.pdf"
+    assert len(list((folder / "Documents").glob("*.pdf"))) == 2
+
+
+def test_organize_tool_asks_first(home: Path, tmp_path: Path) -> None:
+    from vidit.tools.base import ToolContext
+
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    (folder / "a.pdf").write_text("x", encoding="utf-8")
+
+    def make_ctx(perms) -> ToolContext:  # noqa: ANN001
+        return ToolContext(MemoryStore(home / "m.db"), Config(home), perms, None, lambda s: None, [])
+
+    from vidit.core import Vidit as _V  # noqa: F401  (ensure wiring imports fine)
+
+    import vidit.autonomy as aut
+
+    v = types.SimpleNamespace(memory=MemoryStore(home / "m.db"), config=Config(home),
+                              permissions=Permissions(Config(home), event_bus=EventBus()),
+                              llm=None, _status=lambda s: None)
+    engine = aut.AutonomyEngine(v)
+    tool = {t.name: t for t in aut.make_autonomy_tools(engine, None)}["organize_folder"]
+    # No prompter → Guardian denies → dry-run report, files untouched:
+    res = tool.run(str(folder), make_ctx(v.permissions))
+    assert not res.ok and "WOULD" in res.output
+    assert (folder / "a.pdf").exists() and not (folder / "Documents").exists()
+    # User approves → moves happen:
+    v.permissions = Permissions(Config(home), event_bus=EventBus(), prompter=lambda r: Decision.ALLOW_SESSION)
+    res = tool.run(str(folder), make_ctx(v.permissions))
+    assert res.ok and (folder / "Documents" / "a.pdf").exists()
+
+
+def test_memory_upgrade_and_duplicates(tmp_path: Path) -> None:
+    import sqlite3
+
+    from vidit.autonomy import find_duplicates
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as c:  # a pre-autonomy database
+        c.execute("CREATE TABLE conversations (id INTEGER PRIMARY KEY, title TEXT)")
+
+    mem = MemoryStore(db)  # must upgrade in place
+    gid = mem.add_goal("watch downloads", "file", str(tmp_path))
+    assert mem.goal(gid)["trigger"] == "file"
+    mem.log_action(gid, "step 1: list_folder", "ok")
+    assert mem.recent_actions()[0]["action"] == "step 1: list_folder"
+
+    d = tmp_path / "files"
+    d.mkdir()
+    (d / "a.bin").write_bytes(b"same-content")
+    (d / "b.bin").write_bytes(b"same-content")
+    (d / "c.bin").write_bytes(b"different")
+    groups = find_duplicates(d)
+    assert len(groups) == 1 and len(groups[0]["files"]) == 2
+
+
+# ------------------------------------------------------------- windows packaging
+def test_sandbox_python_helper() -> None:
+    from vidit.utils import find_sandbox_python
+
+    runner = find_sandbox_python()
+    assert runner and runner[-1] == "-I"
+    # from source it must be the running interpreter (never empty)
+    assert runner[0] != ""
+
+
+def test_list_windows_platform_honest() -> None:
+    import sys as _sys
+
+    from vidit.tools.system import SystemControl
+
+    wins = SystemControl.list_windows()
+    if _sys.platform.startswith("win"):
+        assert isinstance(wins, list)  # real enumeration on Windows
+    else:
+        assert wins == []  # honest empty list elsewhere
+
+
+def test_windows_tool_gated_by_guardian(home: Path) -> None:
+    import tempfile
+
+    from vidit.tools.base import ToolContext
+    from vidit.tools.system import SystemControl, make_system_tools
+
+    perms = Permissions(Config(home), event_bus=EventBus())  # no prompter → deny
+    ctx = ToolContext(MemoryStore(home / "m.db"), Config(home), perms, None, lambda s: None, [])
+    tools = {t.name: t for t in make_system_tools(SystemControl(Path(tempfile.gettempdir())), home / "b")}
+    res = tools["windows"].run("", ctx)
+    assert not res.ok  # Guardian gate applies to the new tool

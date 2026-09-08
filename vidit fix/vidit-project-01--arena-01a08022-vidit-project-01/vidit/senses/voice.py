@@ -100,16 +100,29 @@ class Voice:
                 import piper  # type: ignore # noqa: F401
 
                 if model:
-                    self._piper_cmd = [sys.executable, "-m", "piper", "--model", str(model)]
+                    if getattr(sys, "frozen", False):
+                        # Vidit.exe cannot run "python -m piper" on itself —
+                        # only use a standalone piper.exe if one is on PATH.
+                        piper_exe = shutil.which("piper")
+                        if not piper_exe:
+                            raise ImportError("piper binary not on PATH (packaged app)")
+                        self._piper_cmd = [piper_exe, "--model", str(model)]
+                    else:
+                        self._piper_cmd = [sys.executable, "-m", "piper", "--model", str(model)]
                     self.engine_name = "piper"
                     return
             except ImportError:
                 pass
         if pref in ("auto", "pyttsx3"):
             try:
-                import pyttsx3  # type: ignore
+                import pyttsx3  # type: ignore # noqa: F401
 
-                self._pyttsx = pyttsx3.init()
+                # Thread-safety: do NOT call pyttsx3.init() here. SAPI/COM
+                # engines must be initialised and driven on the same thread —
+                # init-on-main + runAndWait-on-worker used to freeze on
+                # Windows. The engine is created lazily on the speech worker
+                # (see _speak_pyttsx); here we only check it is importable.
+                self._pyttsx = None
                 self.engine_name = "pyttsx3"
                 return
             except Exception:  # noqa: BLE001
@@ -212,6 +225,18 @@ class Voice:
 
     def _speak_pyttsx(self, text: str, rate: float, volume: float) -> None:
         engine = self._pyttsx
+        if engine is None:
+            # Lazy init on THIS (speech worker) thread — COM/SAPI requirement,
+            # see the note in _detect_engine. The worker thread is stable, so
+            # the engine keeps its thread for its whole life.
+            try:
+                import pyttsx3  # type: ignore
+
+                engine = self._pyttsx = pyttsx3.init()
+            except Exception:  # noqa: BLE001
+                log.exception("pyttsx3 init failed — switching voice to silent")
+                self.engine_name = "silent"
+                return
         try:
             engine.setProperty("rate", int(175 * rate))
             engine.setProperty("volume", volume)

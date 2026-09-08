@@ -6,6 +6,7 @@ things he is proud of and worried about, and his favourite memories.
 """
 from __future__ import annotations
 
+import logging
 import math
 import random
 import time
@@ -170,8 +171,18 @@ class SoulDashboard(QWidget):
         self._build()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
-        self._timer.start(5000)
         self.refresh()
+
+    # Only poll stats/memories while the dashboard is actually visible.
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start(5000)
+            self.refresh()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._timer.stop()
+        super().hideEvent(event)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -214,6 +225,10 @@ class SoulDashboard(QWidget):
             lay.addWidget(t)
             lay.addWidget(widget)
             grid.addWidget(frame, i // 2, i % 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
         tabs.addTab(overview, "Overview")
 
         # Emotion timeline
@@ -264,6 +279,12 @@ class SoulDashboard(QWidget):
         tabs.addTab(perm, "Permissions && skills")
 
     def refresh(self) -> None:
+        try:
+            self._refresh()
+        except Exception:  # noqa: BLE001  — one bad refresh must not kill the dashboard
+            log.exception("dashboard refresh failed")
+
+    def _refresh(self) -> None:
         d = self.vidit.soul_dashboard()
         mood = d["mood"]
         self.orb.set_emotion(mood["dominant"], mood["intensity"], mood["face"])
@@ -287,11 +308,18 @@ class SoulDashboard(QWidget):
             + f"<b>Disk free:</b> {sy.get('disk_free', '?')}<br><b>Uptime:</b> {sy.get('uptime', '?')}"
         )
         b, v, e, ey = d["brain"], d["voice"], d["ears"], d["eyes"]
+        if not e["available"]:
+            ears_line = "<b>⚠ Ears:</b> not installed (pip install faster-whisper sounddevice numpy)"
+        else:
+            mark = "✓" if e["model_ready"] else "…"
+            ears_line = (f"<b>{mark} Ears:</b> {'listening' if e['listening'] else 'idle'} · "
+                         f"whisper model {'ready' if e['model_ready'] else 'not loaded yet'}"
+                         + (f" — <i>{e['error']}</i>" if e["error"] else ""))
         self.brain_box.setHtml(
             f"<b>Model:</b> {b['backend']} / {b['model']}<br><b>Ollama reachable:</b> {b['ollama_reachable']}<br>"
             f"<b>Installed models:</b> {', '.join(b['installed_models']) or '—'}<br><b>Calls:</b> {b['calls']} (failed {b['failures']})<br>"
             f"<b>Last error:</b> {b['last_error'] or '—'}<br><b>Voice:</b> {v['engine']} ({v['profile']})<br>"
-            f"<b>Ears:</b> {'available' if e['available'] else 'not installed'}{' · listening' if e['listening'] else ''}<br>"
+            f"{ears_line}<br>"
             f"<b>Eyes:</b> {'available' if ey['available'] else 'not installed'}"
         )
         self.feelings_box.setHtml("<br>".join(

@@ -37,11 +37,16 @@ class _Bridge(QObject):
     wake = pyqtSignal()
     settings = pyqtSignal(str, object)
     leaving = pyqtSignal(str)
+    # ears lifecycle → mic button / orb / status line feedback
+    listening = pyqtSignal(bool)
+    utterance = pyqtSignal(float)
+    transcript = pyqtSignal(str, bool, bool)
 
 
 class ViditApp:
     def __init__(self, home=None):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
         self.qt = QApplication.instance() or QApplication(sys.argv)
         self.qt.setQuitOnLastWindowClosed(False)
         self.qt.setApplicationName("Vidit")
@@ -85,6 +90,15 @@ class ViditApp:
         self.bridge.wake.connect(self._on_wake)
         self.bridge.settings.connect(self._on_setting)
         self.bridge.leaving.connect(self._on_leaving)
+        self.bridge.listening.connect(self._on_listening)
+        self.bridge.utterance.connect(self.chat.on_utterance)
+        self.bridge.transcript.connect(self._on_ears_transcript)
+        self._voice_thinking = False
+
+        bus.on("ears.started", lambda t, p: self.bridge.listening.emit(True))
+        bus.on("ears.stopped", lambda t, p: self.bridge.listening.emit(False))
+        bus.on("ears.utterance", lambda t, p: self.bridge.utterance.emit(float(p.get("seconds", 0.0))))
+        bus.on("ears.transcript", lambda t, p: self.bridge.transcript.emit(p.get("text", ""), bool(p.get("woke")), bool(p.get("awake"))))
 
         self.orb.openChat.connect(lambda: self.set_mode("chat"))
         self.orb.openHud.connect(lambda: self.set_mode("hud"))
@@ -217,6 +231,10 @@ class ViditApp:
     def _on_proactive(self, text: str) -> None:
         self.chat.add_external_message(text)
         self.orb.show_caption(text)
+        if self._voice_thinking:  # the voice reply arrived — stop "thinking"
+            self._voice_thinking = False
+            self.orb.orb.set_thinking(False)
+            self.chat.orb.set_thinking(self.chat._busy)
         if self.mode in ("orb", "stealth", "pip") and self.vidit.config.get("notifications.enabled", True):
             self._toast(text)
 
@@ -224,12 +242,27 @@ class ViditApp:
         if self.mode == "stealth":
             self.set_mode("chat")
         self.orb.orb.set_thinking(True)
-        QTimer.singleShot(1500, lambda: self.orb.orb.set_thinking(False))
+        QTimer.singleShot(1500, lambda: self.orb.orb.set_thinking(False) if not self._voice_thinking else None)
+
+    def _on_listening(self, on: bool) -> None:
+        """Ears opened/closed (from ears.started / ears.stopped events)."""
+        self.chat.set_ears_state(on)
+        self.orb.orb.set_listening(on)
+        if self.hud:
+            self.hud.orb.set_listening(on)
+
+    def _on_ears_transcript(self, text: str, woke: bool, awake: bool) -> None:
+        self.chat.on_transcript(text, woke, awake)
+        if awake:
+            # A voice chat is being answered on the ears worker thread — show
+            # it as "thinking" until the reply arrives via message.voice.
+            self._voice_thinking = True
+            self.orb.orb.set_thinking(True)
 
     def _set_speaking(self, speaking: bool) -> None:
         self.orb.orb.set_speaking(speaking)
         self.chat.orb.set_speaking(speaking)
-        self.chat.wave.set_active(speaking)
+        self.chat.set_speaking_state(speaking)
         if self.hud:
             self.hud.orb.set_speaking(speaking)
             self.hud.wave.set_active(speaking)
@@ -240,6 +273,10 @@ class ViditApp:
             self._apply_orb_style()
         if key.startswith("voice"):
             self.vidit.voice._detect_engine()
+        if key == "voice.stt_model" and not self.vidit.ears.status()["listening"]:
+            # Drop the loaded Whisper model so the new size is used on the
+            # next start/preload (safe: we're on the main/UI thread).
+            self.vidit.ears.reload_model()
         if key == "personal.emotional_sensitivity":
             self.vidit.emotions.sensitivity = float(value)
 
@@ -303,10 +340,20 @@ class ViditApp:
         if self.vidit.config.get("voice.activation") == "always":
             self.vidit.start_listening()
         code = self.qt.exec_()
+        try:
+            self.chat.shutdown_worker()
+        except Exception:  # noqa: BLE001
+            pass
         self.vidit.sleep()
         return code
 
     def quit(self) -> None:
+        # Reap a running chat worker first so its QThread is never destroyed
+        # while the thread is alive (would crash / warn on exit).
+        try:
+            self.chat.shutdown_worker()
+        except Exception:  # noqa: BLE001
+            pass
         self.vidit.sleep()
         self.qt.quit()
 

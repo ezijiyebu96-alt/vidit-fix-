@@ -33,6 +33,9 @@ class Eyes:
         self.bus = event_bus or global_bus
         self._describe = describe_image
         self._cap = None
+        # cv2.VideoCapture is a native handle and NOT thread-safe: the watch
+        # loop and look()/snapshot() may run on different threads.
+        self._cap_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self.last_observation: Dict[str, Any] = {}
@@ -60,12 +63,13 @@ class Eyes:
             return None
         import cv2  # type: ignore
 
-        cap = self._cap or cv2.VideoCapture(0)
-        try:
-            ok, frame = cap.read()
-        finally:
-            if cap is not self._cap:
-                cap.release()
+        with self._cap_lock:
+            cap = self._cap or cv2.VideoCapture(0)
+            try:
+                ok, frame = cap.read()
+            finally:
+                if cap is not self._cap:
+                    cap.release()
         return frame if ok else None
 
     def observe(self, with_llm: bool = False) -> Dict[str, Any]:
@@ -152,10 +156,11 @@ class Eyes:
             return False
         import cv2  # type: ignore
 
-        self._cap = cv2.VideoCapture(0)
-        if not self._cap.isOpened():
-            self._cap = None
-            return False
+        with self._cap_lock:
+            self._cap = cv2.VideoCapture(0)
+            if not self._cap.isOpened():
+                self._cap = None
+                return False
         self._running.set()
 
         def loop() -> None:
@@ -176,12 +181,13 @@ class Eyes:
 
     def stop_watching(self) -> None:
         self._running.clear()
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:  # noqa: BLE001
-                pass
-            self._cap = None
+        with self._cap_lock:
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._cap = None
 
 
 def _to_b64_jpeg(frame) -> str:

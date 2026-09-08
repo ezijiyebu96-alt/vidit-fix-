@@ -7,6 +7,7 @@ it transparent.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -15,6 +16,8 @@ from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit
 
 from ..core import Vidit
 from .widgets import MoodBadge, OrbWidget, WaveformWidget
+
+log = logging.getLogger("vidit.ui.hud")
 
 
 class _Panel(QFrame):
@@ -62,6 +65,7 @@ class HudOverlay(QWidget):
         self.orb = OrbWidget(size=96)
         centre.addWidget(self.orb, 0, Qt.AlignHCenter)
         self.mood = MoodBadge()
+        self.mood.set_bg("#080c18")
         centre.addWidget(self.mood, 0, Qt.AlignHCenter)
         top.addLayout(centre)
         top.addStretch()
@@ -90,7 +94,24 @@ class HudOverlay(QWidget):
             self.cmd.clear()
             self.command.emit(text)
 
+    # Don't burn CPU polling stats while the HUD is hidden.
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start(2000)
+            self.refresh()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._timer.stop()
+        super().hideEvent(event)
+
     def refresh(self) -> None:
+        try:
+            self._refresh()
+        except Exception:  # noqa: BLE001  — a bad refresh must never kill the HUD
+            log.exception("HUD refresh failed")
+
+    def _refresh(self) -> None:
         s = self.vidit.system.stats()
         lines = [f"CPU  {s.get('cpu_percent', '?')}%", f"RAM  {s.get('ram_percent', '?')}%  ({s.get('ram_used', '?')}/{s.get('ram_total', '?')})"]
         if s.get("gpu"):
@@ -109,8 +130,11 @@ class HudOverlay(QWidget):
         und = self.vidit.learner.understanding()
         brain = self.vidit.llm.status()
         game = self.vidit.gaming
+        ears = self.vidit.ears.status()
+        ears_state = "listening" if ears["listening"] else ("ready" if ears["model_ready"] else "idle")
         mind = [f"mood      {st.describe()}", f"knows you {und['percent']:.0f}%", f"brain     {brain['backend']}/{brain['model']}",
-                f"memories  {self.vidit.memory.memory_count()}", f"game mode {game.behavior()}{' · in game: ' + game.current_game if game.in_game else ''}"]
+                f"memories  {self.vidit.memory.memory_count()}", f"game mode {game.behavior()}{' · in game: ' + game.current_game if game.in_game else ''}",
+                f"ears      {ears_state}"]
         self.mind_panel.body.setText("\n".join(mind))
 
         msgs = self.vidit.memory.messages(self.vidit.conversation_id, limit=2) if self.vidit.conversation_id > 0 else []

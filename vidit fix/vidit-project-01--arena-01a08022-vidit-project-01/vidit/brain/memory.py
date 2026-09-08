@@ -128,6 +128,30 @@ class MemoryStore:
                        done INTEGER DEFAULT 0
                    )"""
             )
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS goals (
+                       id INTEGER PRIMARY KEY,
+                       text TEXT,
+                       trigger TEXT DEFAULT 'once',
+                       trigger_arg TEXT DEFAULT '',
+                       created_at REAL,
+                       next_run REAL,
+                       last_run REAL,
+                       status TEXT DEFAULT 'active',
+                       last_report TEXT DEFAULT '',
+                       fail_count INTEGER DEFAULT 0
+                   )"""
+            )
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS action_log (
+                       id INTEGER PRIMARY KEY,
+                       t REAL,
+                       goal_id INTEGER,
+                       action TEXT,
+                       detail TEXT DEFAULT '',
+                       ok INTEGER DEFAULT 1
+                   )"""
+            )
             try:
                 c.execute(
                     "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, tags, content='memories', content_rowid='id')"
@@ -499,6 +523,57 @@ class MemoryStore:
         with self._lock:
             return [dict(r) for r in self._conn.execute("SELECT * FROM reminders WHERE done=0 ORDER BY due_at").fetchall()]
 
+    # -------------------------------------------------------------- goals
+    def add_goal(self, text: str, trigger: str = "once", trigger_arg: str = "",
+                 next_run: Optional[float] = None) -> int:
+        """Store an autonomous goal ('Every morning brief me…', 'When a PDF
+        lands in Downloads…'). trigger: once | daily | interval | file."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO goals(text, trigger, trigger_arg, created_at, next_run) VALUES (?,?,?,?,?)",
+                (text.strip(), trigger, trigger_arg, time.time(), next_run if next_run is not None else time.time()),
+            )
+            return int(cur.lastrowid)
+
+    def goals(self, status: Optional[str] = "active") -> List[Dict[str, Any]]:
+        with self._lock:
+            if status:
+                rows = self._conn.execute("SELECT * FROM goals WHERE status=? ORDER BY id", (status,)).fetchall()
+            else:
+                rows = self._conn.execute("SELECT * FROM goals ORDER BY id").fetchall()
+            return [dict(r) for r in rows]
+
+    def goal(self, goal_id: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM goals WHERE id=?", (goal_id,)).fetchone()
+            return dict(row) if row else None
+
+    def update_goal(self, goal_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k}=?" for k in fields)
+        with self._lock, self._conn:
+            self._conn.execute(f"UPDATE goals SET {cols} WHERE id=?", (*fields.values(), goal_id))
+
+    def due_goals(self, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM goals WHERE status='active' AND next_run<=?", (now if now is not None else time.time(),)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def log_action(self, goal_id: Optional[int], action: str, detail: str = "", ok: bool = True) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO action_log(t, goal_id, action, detail, ok) VALUES (?,?,?,?,?)",
+                (time.time(), goal_id, action, detail[:500], 1 if ok else 0),
+            )
+
+    def recent_actions(self, n: int = 15) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM action_log ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+            return [dict(r) for r in reversed(rows)]
+
     # ------------------------------------------------------------- export
     def export(self) -> Dict[str, Any]:
         with self._lock:
@@ -509,12 +584,14 @@ class MemoryStore:
                 "memories": [m.to_dict() for m in self.all_memories()],
                 "people": self.people(),
                 "reminders": [dict(r) for r in self._conn.execute("SELECT * FROM reminders").fetchall()],
+                "goals": [dict(r) for r in self._conn.execute("SELECT * FROM goals").fetchall()],
+                "action_log": [dict(r) for r in self._conn.execute("SELECT * FROM action_log").fetchall()],
             }
 
     def wipe(self) -> None:
         """Section 10G: Delete All Data."""
         with self._lock, self._conn:
-            for table in ("messages", "conversations", "memories", "people", "reminders"):
+            for table in ("messages", "conversations", "memories", "people", "reminders", "goals", "action_log"):
                 self._conn.execute(f"DELETE FROM {table}")
 
     def size_bytes(self) -> int:

@@ -12,6 +12,7 @@ Ears reports itself unavailable and the chat window keeps working.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import re
 import threading
@@ -82,7 +83,8 @@ class Ears:
         return {
             "available": self.available(),
             "listening": self._listening.is_set(),
-            "model": self._get("voice.stt_model", "small"),
+            "model": getattr(self, "_effective_model", None)
+            or self._get("voice.stt_model", "auto"),
             "model_ready": self._model_ready.is_set(),
             "error": self.last_error,
             "awake": time.time() < self.awake_until,
@@ -96,6 +98,54 @@ class Ears:
     # fallbacks for machines whose runtimes reject it.
     _COMPUTE_TYPES = ("int8", "int8_float16", "float32", "default")
 
+    # Low-RAM guard (mid-range target: ~4 GB). "small" only runs when there
+    # is room for it; smaller machines get "base"/"tiny" automatically.
+    _LOW_RAM_GB = 4.5       # at/below this, whisper "small" is downgraded
+    _TINY_RAM_GB = 3.0      # at/below this, "tiny" is preferred
+    _AUTO_MAX_GB = 6.0      # "auto" keeps "small" only above this
+
+    @staticmethod
+    def _system_ram_gb() -> float:
+        """Total RAM in GB (psutil is a core dep; safe fallback if missing)."""
+        try:
+            import psutil  # type: ignore
+
+            return psutil.virtual_memory().total / 1e9
+        except Exception:  # noqa: BLE001
+            return 8.0
+
+    def _resolve_model_size(self) -> tuple:
+        """Pick the Whisper size + cpu_threads for THIS machine.
+
+        - ``voice.stt_model == "auto"`` (new default): tiny ≤3 GB,
+          base ≤6 GB, small above.
+        - A stored "small" (the old default that old settings.json files
+          already have) is downgraded to "base" on low-RAM machines so a
+          4 GB laptop does not thrash — set ``voice.stt_model`` explicitly
+          to any other value to pin it.
+        - cpu_threads: 2 on low-RAM/low-core machines, else 4.
+        Returns (size, threads, auto_selected).
+        """
+        stored = str(self._get("voice.stt_model", "auto") or "auto").strip().lower()
+        ram = self._system_ram_gb()
+        if stored in ("", "auto"):
+            if ram <= self._TINY_RAM_GB:
+                size = "tiny"
+            elif ram <= self._AUTO_MAX_GB:
+                size = "base"
+            else:
+                size = "small"
+            auto = True
+        elif stored == "small" and ram <= self._LOW_RAM_GB:
+            size = "base"
+            auto = True
+        else:
+            size = stored
+            auto = False
+        cores = os.cpu_count() or 4
+        threads = 2 if (ram <= self._LOW_RAM_GB or cores <= 2) else min(4, cores)
+        return size, threads, auto
+
     def _load_model(self):
         """Build the WhisperModel if needed. Caller MUST hold ``self._model_lock``.
 
@@ -108,10 +158,15 @@ class Ears:
 
         from faster_whisper import WhisperModel
 
-        size = self._get("voice.stt_model", "small")
+        size, threads, auto = self._resolve_model_size()
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
-        log.info("Loading Whisper model on CPU: %s", size)
+        log.info(
+            "Loading Whisper model on CPU: %s (%s, cpu_threads=%d, RAM %.1f GB)",
+            size, "auto-selected for low RAM" if auto else "as configured",
+            threads, self._system_ram_gb(),
+        )
+        self._effective_model = size
 
         last_exc: Optional[Exception] = None
         for compute_type in self._COMPUTE_TYPES:
@@ -121,7 +176,7 @@ class Ears:
                     device="cpu",
                     compute_type=compute_type,
                     download_root=str(self.models_dir),
-                    cpu_threads=4,
+                    cpu_threads=threads,
                     num_workers=1,
                 )
                 log.info(
@@ -174,6 +229,18 @@ class Ears:
             # let start_listening()/status() surface it.
             log.exception("Whisper preload failed")
             return False
+
+    def reload_model(self) -> None:
+        """Drop the loaded Whisper model so the next preload() rebuilds it.
+
+        Called from the main/UI thread when ``voice.stt_model`` changes in
+        Settings. In-flight utterances keep their local reference to the old
+        model and finish safely; new ones wait for the rebuilt model.
+        """
+        with self._model_lock:
+            self._model = None
+        self._model_ready.clear()
+        log.info("Whisper model released — will reload on next use")
 
     # ------------------------------------------------------------
     # transcription
@@ -237,15 +304,17 @@ class Ears:
             # (OpenMP/MKL/CTranslate2 init) — the model must have been
             # preloaded on the main/UI thread (see preload()). If it wasn't,
             # skip the utterance instead of crashing.
-            if not self._model_ready.is_set() or self._model is None:
+            if not self._model_ready.is_set():
                 log.info(
                     "Whisper model not preloaded yet — skipping %.2fs utterance "
                     "(call ears.preload() on the main thread before start())",
                     duration,
                 )
                 return ""
-
+            # Take a local ref: reload_model() may swap the model while we work.
             model = self._model
+            if model is None:
+                return ""
             segments, _ = model.transcribe(
                 audio,
                 language=None,
@@ -353,6 +422,33 @@ class Ears:
                 self._utterance_q.put_nowait(None)
             except (queue.Empty, queue.Full):
                 pass
+
+        # Free queued raw frames right away (no reason to hold audio buffers
+        # while idle).
+        while not self._audio_q.empty():
+            try:
+                self._audio_q.get_nowait()
+            except queue.Empty:
+                break
+
+        # Low-RAM guard: release the Whisper model while idle so a 4 GB
+        # laptop gets its RAM back between listening sessions. The next
+        # start_listening() re-preloads it on the main thread (a few seconds
+        # for base/tiny). voice.unload_model_when_idle: null = auto
+        # (unload when RAM <= 4.5 GB), true/false = force.
+        choice = self._get("voice.unload_model_when_idle", None)
+        should_unload = (
+            choice if choice is not None
+            else self._system_ram_gb() <= self._LOW_RAM_GB
+        )
+        if should_unload and self._model is not None:
+            with self._model_lock:
+                self._model = None
+            self._model_ready.clear()
+            log.info(
+                "Whisper model unloaded to free RAM while idle "
+                "(set voice.unload_model_when_idle=false to keep it loaded)"
+            )
 
         self.bus.emit("ears.stopped")
         log.info("Vidit ears stopped")

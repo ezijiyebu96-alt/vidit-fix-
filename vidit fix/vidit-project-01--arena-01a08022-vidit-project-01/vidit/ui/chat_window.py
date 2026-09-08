@@ -74,6 +74,14 @@ class ChatWindow(QWidget):
         self._stream_buffer = ""
         self._messages: List[Dict[str, Any]] = []
         self._typing_dots = 0
+        # Voice / status state machine (see _update_status). One place decides
+        # what the status line and the mic/wave widgets show, so the states
+        # never fight each other.
+        self._busy = False
+        self._speaking = False
+        self._ears_listening = False
+        self._transcribing = False
+        self._mic_error = ""
         self._build()
         self._load_conversations()
         self._render_all()
@@ -174,8 +182,16 @@ class ChatWindow(QWidget):
         attach_btn.clicked.connect(self._pick_files)
         bottom.addWidget(attach_btn)
         self.mic_btn = QPushButton("🎤 Mic")
+        self.mic_btn.setObjectName("mic")
         self.mic_btn.setCheckable(True)
         self.mic_btn.setToolTip("Voice input (hands-free)")
+        if not self.vidit.ears.available():
+            # Graceful degradation: no dead button, a clear message instead.
+            self.mic_btn.setEnabled(False)
+            self.mic_btn.setText("🎤 No speech")
+            self.mic_btn.setToolTip(
+                "Speech not installed — run:  pip install faster-whisper sounddevice numpy"
+            )
         self.mic_btn.toggled.connect(self._toggle_mic)
         bottom.addWidget(self.mic_btn)
         self.input = _InputBox(self)
@@ -199,6 +215,8 @@ class ChatWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_conversation)
         QShortcut(QKeySequence("Ctrl+E"), self, activated=lambda: self._export("txt"))
         QShortcut(QKeySequence("Escape"), self, activated=self._stop)
+        # Global STOP for autonomous chains — works from any Vidit window.
+        QShortcut(QKeySequence("Ctrl+Alt+S"), self, activated=self._stop, context=Qt.ApplicationShortcut)
 
     # ------------------------------------------------------- conversations
     def _load_conversations(self) -> None:
@@ -285,17 +303,19 @@ class ChatWindow(QWidget):
         p = self._palette()
         size = int(self.vidit.config.get("appearance.font_size", 13))
         return f"""<html><head><style>
-        body {{ color: {p['text']}; font-size: {size}px; }}
-        .msg {{ margin: 8px 0; padding: 10px 14px; border-radius: 14px; }}
-        .user {{ background: {p['user']}; margin-left: 15%; }}
-        .assistant {{ background: {p['bot']}; margin-right: 15%; border-left: 3px solid {p['accent']}; }}
-        .meta {{ color: {p['muted']}; font-size: {size - 3}px; }}
+        body {{ color: {p['text']}; font-size: {size}px; line-height: 145%; }}
+        .msg {{ margin: 10px 0; padding: 12px 16px; border-radius: 16px; }}
+        .user {{ background: {p['user']}; margin-left: 18%; margin-right: 24px; border-right: 3px solid {p['accent2']}; }}
+        .assistant {{ background: {p['bot']}; margin-right: 18%; margin-left: 24px; border-left: 3px solid {p['accent']}; }}
+        .meta {{ color: {p['muted']}; font-size: {size - 3}px; margin-bottom: 4px; }}
         .think {{ color: {p['muted']}; font-style: italic; border-left: 2px dashed {p['border']}; padding-left: 8px; margin: 6px 0; }}
         .react {{ font-size: {size + 2}px; }}
         code {{ background: {p['panel2']}; padding: 1px 4px; border-radius: 4px; }}
-        pre {{ background: {p['panel2']}; padding: 8px; border-radius: 8px; }}
+        pre {{ background: {p['panel2']}; padding: 10px; border-radius: 10px; }}
+        blockquote {{ color: {p['muted']}; border-left: 3px solid {p['border']}; margin-left: 4px; padding-left: 10px; }}
         mark {{ background: {p['accent']}; color: white; }}
         a {{ color: {p['accent2']}; }}
+        table {{ font-size: {size - 1}px; }}
         </style></head><body>{body}</body></html>"""
 
     def _bubble(self, m: Dict[str, Any], highlight: str = "") -> str:
@@ -341,6 +361,7 @@ class ChatWindow(QWidget):
     def _refresh_mood(self) -> None:
         st = self.vidit.emotions.state()
         self.orb.set_emotion(st.dominant, st.intensity, st.face)
+        self.mood_badge.set_bg(self._palette()["panel"])
         self.mood_badge.set_mood(st.dominant, st.intensity)
         self.wave.set_color(st.color)
 
@@ -368,6 +389,10 @@ class ChatWindow(QWidget):
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
+        # Reap the objects when the work is done (no lingering threads/objects).
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.failed.connect(self._worker.deleteLater)
         self._thread.start()
 
     def _on_chunk(self, chunk: str) -> None:
@@ -397,9 +422,10 @@ class ChatWindow(QWidget):
         self.status_label.setText("something broke, I've noted it: " + error[:80])
 
     def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
         self.send_btn.setEnabled(not busy)
         self.orb.set_thinking(busy)
-        self.wave.set_active(busy)
+        self._update_wave()
         if busy:
             self._typing_timer.start(400)
         else:
@@ -408,6 +434,14 @@ class ChatWindow(QWidget):
     def _animate_typing(self) -> None:
         self._typing_dots = (self._typing_dots + 1) % 4
         self.status_label.setText("thinking" + "." * self._typing_dots)
+
+    def shutdown_worker(self, ms: int = 4000) -> None:
+        """Wait briefly for a running chat worker so the QThread is never
+        destroyed while its thread is still running (crash on exit)."""
+        thread = self._thread
+        if thread is not None and thread.isRunning():
+            thread.quit()
+            thread.wait(ms)
 
     def _stop(self) -> None:
         self.vidit.stop()
@@ -443,16 +477,98 @@ class ChatWindow(QWidget):
     # -------------------------------------------------------------- voice
     def _toggle_mic(self, on: bool) -> None:
         if on:
-            ok = self.vidit.start_listening()
-            if not ok:
-                self.mic_btn.setChecked(False)
-                self.status_label.setText(self.vidit.ears.last_error or "microphone not allowed / not available (pip install faster-whisper sounddevice)")
-            else:
-                self.status_label.setText("listening… say my name")
-                self.wave.set_active(True)
+            # Instant feedback first: preloading Whisper can block this thread
+            # for a few seconds on the very first start, so repaint the button
+            # before the blocking call (still on the main/UI thread — the
+            # model must be built there, see Ears.preload()).
+            self._mic_error = ""
+            self._set_mic_state("listening")
+            self.status_label.setText("waking my ears…")
+            QTimer.singleShot(0, self._start_listening)
         else:
-            self.vidit.stop_listening()
-            self.wave.set_active(False)
+            self.vidit.stop_listening()  # ears.stopped event updates the UI
+
+    def _start_listening(self) -> None:
+        ok = self.vidit.start_listening()
+        if not ok:
+            self._mic_error = self.vidit.ears.last_error or \
+                "microphone not allowed / not available (pip install faster-whisper sounddevice)"
+            self._set_mic_state("error")
+            self.mic_btn.setChecked(False)
+            self.status_label.setText(self._mic_error)
+            return
+        # start_listening succeeded; the ears.started event flips the UI into
+        # the listening state. If the Whisper model failed to preload, warn
+        # softly (non-blocking) — the mic still listens for wake words… which
+        # need the model, so be honest that transcripts will be skipped.
+        st = self.vidit.ears.status()
+        if not st.get("model_ready") and st.get("error"):
+            self.status_label.setText(f"ears not ready: {st['error'][:80]}")
+
+    # ---- entry points for the GUI bridge (called on the Qt main thread) ----
+    def set_ears_state(self, on: bool) -> None:
+        """ears.started / ears.stopped events (from any thread, marshalled)."""
+        self._ears_listening = on
+        if on:
+            self._transcribing = False
+            self._mic_error = ""
+        self.mic_btn.blockSignals(True)
+        self.mic_btn.setChecked(on)
+        self.mic_btn.blockSignals(False)
+        self._set_mic_state("listening" if on else "idle")
+        self._update_wave()
+        self._update_status()
+
+    def on_utterance(self, seconds: float) -> None:
+        """You stopped talking — Whisper is now transcribing the utterance."""
+        if self._ears_listening:
+            self._transcribing = True
+            self._set_mic_state("processing")
+            self._update_status()
+
+    def on_transcript(self, text: str, woke: bool, awake: bool) -> None:
+        self._transcribing = False
+        self._set_mic_state("listening" if self._ears_listening else "idle")
+        if awake:
+            self._update_status()
+            self.status_label.setText("heard you — thinking…")
+
+    def set_speaking_state(self, on: bool) -> None:
+        """voice.started / voice.finished events."""
+        self._speaking = on
+        self._update_wave()
+        self._update_status()
+
+    # ---- internal state machine -------------------------------------------
+    def _set_mic_state(self, state: str) -> None:
+        self.mic_btn.setProperty("micState", state)
+        self.mic_btn.setText({
+            "idle": "🎤 Mic",
+            "listening": "🎧 Listening",
+            "processing": "💬 Heard…",
+            "error": "⚠ Mic error",
+        }[state])
+        style = self.mic_btn.style()
+        style.unpolish(self.mic_btn)
+        style.polish(self.mic_btn)
+
+    def _update_wave(self) -> None:
+        # Priority: thinking > speaking > listening > idle.
+        self.wave.set_active(self._busy or self._speaking or self._ears_listening)
+
+    def _update_status(self) -> None:
+        if self._mic_error:
+            self.status_label.setText(self._mic_error)
+            return
+        if self._busy:
+            return  # the typing animation owns the label while thinking
+        if self._speaking:
+            self.status_label.setText("🔊 speaking…")
+        elif self._transcribing:
+            self.status_label.setText("heard you — transcribing…")
+        elif self._ears_listening:
+            self.status_label.setText("listening… say my name")
+        else:
             self.status_label.setText("here with you")
 
     # ------------------------------------------------------- message menu

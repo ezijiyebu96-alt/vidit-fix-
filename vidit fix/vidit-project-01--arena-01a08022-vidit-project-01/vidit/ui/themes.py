@@ -10,8 +10,12 @@ from typing import Any, Dict
 
 PALETTES: Dict[str, Dict[str, str]] = {
     "cyberpunk": {
-        "bg": "#0b1020", "panel": "#111a33", "panel2": "#172244", "text": "#e6ecff", "muted": "#8b9bd1",
-        "accent": "#4f7cff", "accent2": "#b14dff", "user": "#1e2a52", "bot": "#2a1f5c", "border": "#2c3b6f",
+        # cyber-glass: deep space base, neon cyan/violet accents, glass panels
+        "bg": "#070b16", "panel": "rgba(16, 24, 48, 205)", "panel2": "rgba(30, 42, 80, 190)",
+        "text": "#eaf2ff", "muted": "#8ea3d0",
+        "accent": "#00e5ff", "accent2": "#a855f7",
+        "user": "rgba(0, 229, 255, 0.10)", "bot": "rgba(123, 92, 255, 0.13)",
+        "border": "rgba(0, 229, 255, 0.22)", "glow": "#7b5cff",
         "font": "Segoe UI",
     },
     "cozy": {
@@ -64,44 +68,88 @@ def palette(name: str, mood_color: str = "#4f7cff", custom: Dict[str, Any] | Non
 def stylesheet(p: Dict[str, str], font_size: int = 13, font_family: str | None = None, reduced_motion: bool = False,
                dyslexia_font: bool = False) -> str:
     family = "OpenDyslexic, Comic Sans MS, Verdana" if dyslexia_font else (font_family or p.get("font", "Segoe UI"))
+    glow = p.get("glow", p.get("accent2", p["accent"]))
     return f"""
     QWidget {{ background: {p['bg']}; color: {p['text']}; font-family: '{family}'; font-size: {font_size}px; }}
     QMainWindow, QDialog {{ background: {p['bg']}; }}
-    QFrame#panel, QWidget#panel {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 14px; }}
+    QFrame#panel, QWidget#panel {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 16px; }}
+    QFrame#glassCard {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 18px; }}
+    QFrame#softCard {{ background: {p['panel2']}; border: 1px solid {p['border']}; border-radius: 14px; }}
+    QLabel#onlinePill {{ color: #34d399; background: rgba(52, 211, 153, 0.10);
+                        border: 1px solid rgba(52, 211, 153, 0.45); border-radius: 10px; padding: 3px 12px; font-weight: 700; }}
+    QLabel#tagline {{ color: {p['muted']}; background: transparent; font-size: {font_size - 1}px; }}
+    QLabel#quote {{ color: {p['muted']}; background: transparent; font-style: italic; }}
+    QLabel#hint {{ color: {p['muted']}; background: transparent; font-size: {font_size - 2}px; }}
+    QListWidget#navList {{ background: transparent; border: none; padding: 6px 0; outline: none; }}
+    QListWidget#navList::item {{ color: {p['muted']}; padding: 10px 14px; margin: 2px 10px; border-radius: 10px;
+                                 border-left: 2px solid transparent; }}
+    QListWidget#navList::item:hover {{ color: {p['text']}; background: {p['panel2']}; }}
+    QListWidget#navList::item:selected {{ color: {p['accent']}; background: {p['panel2']};
+                                         border-left: 2px solid {p['accent']}; font-weight: 600; }}
+    QPushButton#modeChip {{ background: {p['panel2']}; color: {p['muted']}; border: 1px solid {p['border']};
+                            border-radius: 14px; padding: 7px 14px; font-weight: 600; }}
+    QPushButton#modeChip:hover {{ color: {p['text']}; border-color: {p['accent']}; }}
+    QPushButton#modeChip:checked {{ background: rgba(0, 229, 255, 0.12); color: {p['accent']};
+                                   border: 1px solid {p['accent']}; font-weight: 700; }}
+    QScrollArea {{ background: transparent; border: none; }}
+    QScrollArea > QWidget > QWidget {{ background: transparent; }}
     QTextEdit, QPlainTextEdit, QLineEdit, QListWidget, QTreeWidget, QTableWidget {{
         background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 10px; padding: 6px; selection-background-color: {p['accent']};
     }}
+    QTextEdit:focus, QPlainTextEdit:focus, QLineEdit:focus {{ border: 1px solid {p['accent']}; }}
     QTextBrowser {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 12px; padding: 8px; }}
     QPushButton {{ background: {p['panel2']}; border: 1px solid {p['border']}; border-radius: 10px; padding: 7px 14px; }}
     QPushButton:hover {{ border-color: {p['accent']}; color: {p['accent']}; }}
     QPushButton:pressed {{ background: {p['accent']}; color: {p['bg']}; }}
-    QPushButton#primary {{ background: {p['accent']}; color: white; border: none; font-weight: 600; }}
-    QPushButton#primary:hover {{ background: {p['accent2']}; }}
+    QPushButton:focus {{ border-color: {p['accent']}; }}
+    QPushButton:disabled {{ color: {p['muted']}; background: {p['panel']}; }}
+    QPushButton#primary {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {p['accent']}, stop:1 {glow});
+                           color: #051022; border: none; font-weight: 700; min-height: 34px; padding: 8px 22px; }}
+    QPushButton#primary:hover {{ border: 1px solid white; }}
+    QPushButton#primary:disabled {{ background: {p['panel2']}; color: {p['muted']}; }}
     QPushButton#ghost {{ background: transparent; border: none; color: {p['muted']}; }}
     QPushButton#ghost:hover {{ color: {p['accent']}; }}
+    QPushButton#danger {{ background: transparent; border: 1px solid #ef4444; color: #f87171; border-radius: 10px; padding: 7px 14px; }}
+    QPushButton#danger:hover {{ background: rgba(239, 68, 68, 0.15); }}
+    /* Mic button states (dynamic property micState, see ChatWindow) */
+    QPushButton#mic {{ font-weight: 600; min-width: 96px; }}
+    QPushButton#mic[micState="listening"] {{ background: #16a34a; color: white; border: 1px solid #15803d; }}
+    QPushButton#mic[micState="listening"]:hover {{ background: #15803d; }}
+    QPushButton#mic[micState="processing"] {{ background: {p['accent']}; color: #051022; border: 1px solid {p['accent2']}; }}
+    QPushButton#mic[micState="error"] {{ background: #b91c1c; color: white; border: 1px solid #7f1d1d; }}
     QLabel {{ background: transparent; }}
     QLabel#title {{ font-size: {font_size + 7}px; font-weight: 700; color: {p['accent']}; background: transparent; }}
     QLabel#muted {{ color: {p['muted']}; background: transparent; }}
     QCheckBox {{ background: transparent; }}
     QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: 12px; background: {p['panel']}; }}
-    QTabBar::tab {{ background: {p['panel2']}; padding: 8px 16px; border-top-left-radius: 10px; border-top-right-radius: 10px; margin-right: 2px; }}
-    QTabBar::tab:selected {{ background: {p['accent']}; color: white; }}
+    QTabBar::tab {{ background: {p['panel2']}; padding: 8px 16px; border-top-left-radius: 10px; border-top-right-radius: 10px; margin-right: 2px; color: {p['muted']}; }}
+    QTabBar::tab:selected {{ background: {p['accent']}; color: #051022; }}
+    QTabBar::tab:hover {{ color: {p['text']}; }}
+    QTabBar::tab:selected:hover {{ color: #051022; }}
     QComboBox, QSpinBox, QDoubleSpinBox {{ background: {p['panel2']}; border: 1px solid {p['border']}; border-radius: 8px; padding: 4px 8px; }}
+    QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {p['accent']}; }}
     QComboBox QAbstractItemView {{ background: {p['panel']}; selection-background-color: {p['accent']}; }}
     QSlider::groove:horizontal {{ height: 6px; background: {p['panel2']}; border-radius: 3px; }}
     QSlider::handle:horizontal {{ width: 16px; margin: -6px 0; background: {p['accent']}; border-radius: 8px; }}
     QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid {p['border']}; background: {p['panel2']}; }}
     QCheckBox::indicator:checked {{ background: {p['accent']}; }}
+    QListWidget::item {{ padding: 6px 8px; border-radius: 8px; }}
+    QListWidget::item:hover {{ background: {p['panel2']}; }}
+    QListWidget::item:selected {{ background: {p['accent']}; color: #051022; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; }}
     QScrollBar::handle:vertical {{ background: {p['border']}; border-radius: 5px; min-height: 30px; }}
+    QScrollBar::handle:vertical:hover {{ background: {p['muted']}; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
-    QProgressBar {{ border: 1px solid {p['border']}; border-radius: 6px; background: {p['panel2']}; text-align: center; }}
-    QProgressBar::chunk {{ background: {p['accent']}; border-radius: 6px; }}
-    QMenu {{ background: {p['panel']}; border: 1px solid {p['border']}; }}
-    QMenu::item:selected {{ background: {p['accent']}; color: white; }}
-    QToolTip {{ background: {p['panel']}; color: {p['text']}; border: 1px solid {p['border']}; }}
-    QGroupBox {{ border: 1px solid {p['border']}; border-radius: 10px; margin-top: 12px; padding-top: 10px; }}
+    QProgressBar {{ border: 1px solid {p['border']}; border-radius: 6px; background: {p['panel2']}; text-align: center; color: {p['text']}; }}
+    QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {p['accent']}, stop:1 {glow}); border-radius: 6px; }}
+    QMenu {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 8px; }}
+    QMenu::item {{ padding: 5px 18px; border-radius: 6px; }}
+    QMenu::item:selected {{ background: {p['accent']}; color: #051022; }}
+    QToolTip {{ background: {p['panel']}; color: {p['text']}; border: 1px solid {p['accent']}; border-radius: 6px; padding: 4px 8px; }}
+    QGroupBox {{ border: 1px solid {p['border']}; border-radius: 10px; margin-top: 12px; padding-top: 10px; font-weight: 600; }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 12px; color: {p['accent']}; }}
+    QSplitter::handle {{ background: transparent; }}
+    QSplitter::handle:horizontal {{ width: 6px; }}
     """
 
 

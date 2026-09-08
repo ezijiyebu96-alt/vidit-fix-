@@ -1,5 +1,5 @@
 # Optional senses — install what you want Vidit to have. All run offline.
-# Ears (offline speech-to-text + wake word). Uses the RTX 4050 through CUDA if available.
+# Ears (offline speech-to-text + wake word) — runs on CPU (int8), no GPU needed
 faster-whisper>=1.0
 sounddevice>=0.4
 numpy>=1.24

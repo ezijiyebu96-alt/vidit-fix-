@@ -79,6 +79,54 @@ DESCRIPTIONS: Dict[Capability, str] = {
     Capability.SCREEN: "look at the screen",
 }
 
+# ---------------------------------------------------------------------------
+# Autonomy risk levels (section 8, "Autonomous Laptop" layer).
+#   auto   🟢 — Vidit may just do it when autonomy.level == "auto"
+#   ask    🟡 — draft/prepare automatically, but "I need your OK" first
+#   always 🔴 — ALWAYS asks, no matter what any other setting says
+# ---------------------------------------------------------------------------
+_RED_WORDS = ("password", "credential", "wallet", "bank", "purchase", "buy ",
+              "checkout", "payment", "pay ", "invoice", "ssh", "api key", "token",
+              "security setting", "format ", "factory reset", "share ", "send to",
+              "upload", "post ", "tweet", "install", "uninstall", "shutdown",
+              "reboot", "taskkill", "force quit")
+_RED_CAPS = {Capability.DELETE_FILES, Capability.CODE_EXECUTION, Capability.SELF_MODIFICATION}
+_GREEN_CAPS = {Capability.READ_FILES, Capability.SCREEN, Capability.CLIPBOARD}
+
+
+def risk_level(capability: Capability, reason: str = "", target: Optional[str] = None) -> str:
+    """Classify one action as "auto" (🟢), "ask" (🟡) or "always" (🔴).
+
+    Pure function — no settings involved. 🔴 wins over everything (mass
+    delete, money, purchases, passwords, security, sharing sensitive data);
+    ordinary reads/searches/drafts inside Vidit's world are 🟢.
+    """
+    text = f"{reason} {target or ''}".lower()
+    if any(w in text for w in _RED_WORDS):
+        return "always"
+    if capability in _RED_CAPS:
+        return "always" if capability is Capability.DELETE_FILES and _looks_mass(target or "") else "ask"
+    if capability in _GREEN_CAPS:
+        return "auto"
+    if capability is Capability.SYSTEM_CONTROL:
+        return "ask"
+    if capability is Capability.WRITE_FILES:
+        return "auto" if target else "ask"
+    if capability is Capability.INTERNET:
+        return "ask"
+    return "ask"
+
+
+def _looks_mass(target: str) -> bool:
+    """A whole folder (or a wildcard) delete counts as mass delete → 🔴."""
+    t = target.strip().lower()
+    if not t:
+        return False
+    if any(ch in t for ch in "*"):
+        return True
+    p = Path(t)
+    return p.is_dir()
+
 # Default policy when a settings key is missing.
 _DEFAULT_POLICY: Dict[Capability, str] = {cap: "ask" for cap in Capability}
 _DEFAULT_POLICY[Capability.READ_FILES] = "ask"
@@ -168,6 +216,18 @@ class Permissions:
             return "always" if raw else "ask"
         return str(raw)
 
+    def autonomy_level(self) -> str:
+        """How much he may do by himself: "standard" (ask per privacy
+        settings) or "auto" (🟢 actions run without asking; 🟡/🔴 still ask)."""
+        return str(self.config.get("autonomy.level", "standard") or "standard")
+
+    def risk_for(self, capability: Capability, reason: str = "", target: Optional[str] = None) -> str:
+        return risk_level(capability, reason, target)
+
+    def last_actions(self, n: int = 12) -> List[Dict[str, Any]]:
+        """Recent guardian decisions, newest last (for doctor / status)."""
+        return self.audit[-n:]
+
     def private_roots(self) -> List[Path]:
         return [Path(p).expanduser() for p in self.config.get("privacy.private_folders", []) or []]
 
@@ -218,10 +278,19 @@ class Permissions:
             return Decision.DENY, "switched off in privacy settings"
         if policy == "always":
             return Decision.ALLOW_ALWAYS, "always allowed in privacy settings"
-        with self._lock:
-            key = self._session_key(request)
-            if key in self._session_grants:
-                return (Decision.ALLOW_SESSION if self._session_grants[key] else Decision.DENY), "session decision"
+        risk = risk_level(cap, request.reason, request.target)
+        if policy == "ask":
+            if risk == "always":
+                # 🔴 money/deletion/security/sharing — ask EVERY time; a past
+                # "always"/session grant never covers these.
+                pass
+            elif self.autonomy_level() == "auto" and risk == "auto":
+                return Decision.ALLOW_ALWAYS, "🟢 automatic (autonomy.level=auto)"
+            else:
+                with self._lock:
+                    key = self._session_key(request)
+                    if key in self._session_grants:
+                        return (Decision.ALLOW_SESSION if self._session_grants[key] else Decision.DENY), "session decision"
         # policy == "ask"
         self.bus.emit("guardian.asking", capability=cap.value, question=request.question)
         try:
@@ -230,9 +299,9 @@ class Permissions:
             log.exception("prompter failed")
             return Decision.DENY, f"could not ask ({exc})"
         with self._lock:
-            if decision is Decision.ALLOW_SESSION:
+            if decision is Decision.ALLOW_SESSION and risk != "always":
                 self._session_grants[self._session_key(request)] = True
-            elif decision is Decision.ALLOW_ALWAYS:
+            elif decision is Decision.ALLOW_ALWAYS and risk != "always":
                 self.config.set(_POLICY_KEY[cap], "always")
             elif decision is Decision.DENY_ALWAYS:
                 self.config.set(_POLICY_KEY[cap], "off")

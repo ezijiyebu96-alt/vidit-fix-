@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .autonomy import AutonomyEngine, make_autonomy_tools
 from .brain import LLMClient, Learner, MemoryStore, SelfRepair
 from .brain.llm import StreamFilter
 from .brain.self_repair import SkillContext
@@ -106,6 +107,10 @@ class Vidit:
         for tool in (make_file_tools(self.local_search, self.analyzer) + make_web_tools(self.web, self.research)
                      + make_code_tools(self.code) + make_system_tools(self.system, self.config.backups_dir)
                      + make_canvas_tools(self.canvas)):
+            self.tools.register(tool)
+        # --- autonomy (the "Real Autonomous Laptop" layer) -----------------
+        self.autonomy = AutonomyEngine(self)
+        for tool in make_autonomy_tools(self.autonomy, self.system):
             self.tools.register(tool)
         self.tools.register(Tool("skill", "Run one of your own self-created skills.", "skill_name optional args",
                                  lambda args, ctx: self._skill_tool(args)))
@@ -420,24 +425,30 @@ class Vidit:
 
     # ============================================================ heartbeat
     def _heartbeat_loop(self) -> None:
+        # Saver energy mode halves the work cadence — same 5 s wake-up (cheap),
+        # but periodic tasks run half as often so a low-end machine stays cool.
+        period = 2 if self.config.get("general.energy_mode") == "saver" else 1
         tick = 0
         while self._alive.is_set():
             time.sleep(5)
             tick += 1
             try:
-                if tick % 12 == 0:  # every minute
+                if tick % (12 * period) == 0:  # every minute (2 min in saver)
                     self.emotions.tick()
                     self.gaming.detect()
                     for reminder in self.memory.due_reminders():
                         self._proactive(f"Reminder: {reminder['text']}")
-                if tick % 720 == 0:  # every hour
+                    if self.config.get("autonomy.proactive", True):
+                        for report in self.autonomy.tick():
+                            self._proactive(report)
+                if tick % (720 * period) == 0:  # every hour (2 h in saver)
                     self.emotions.save()
                     self.self_model.save()
                     self.repair.backup("hourly")
                 if time.time() - self._last_maintenance > 6 * 3600:
                     self.learner.maintenance()
                     self._last_maintenance = time.time()
-                if tick % 60 == 0 and self.config.get("autonomy.proactive_checkins", True):
+                if tick % (60 * period) == 0 and self.config.get("autonomy.proactive_checkins", True):
                     self._maybe_check_in()
             except Exception as exc:  # noqa: BLE001
                 self.repair.record_failure("heartbeat", exc)
@@ -470,7 +481,17 @@ class Vidit:
 
     # ============================================================== control
     def stop(self) -> None:
+        """The global STOP switch: Guardian sets stop_event, any running
+        autonomous chain aborts between steps, speech halts (bus → _on_stop)."""
         self.permissions.stop()
+
+    def cancel_autonomy(self) -> int:
+        """Pause every standing goal (STOP / 'cancel everything')."""
+        paused = 0
+        for goal in self.memory.goals(status="active"):
+            self.memory.update_goal(goal["id"], status="paused")
+            paused += 1
+        return paused
 
     def _on_stop(self) -> None:
         self.voice.stop()
@@ -604,5 +625,6 @@ class Vidit:
 
 def _strip_tool_lines(text: str) -> str:
     from .tools.base import TOOL_CALL_RE
+
 
     return TOOL_CALL_RE.sub("", text).strip()

@@ -40,6 +40,8 @@ DEFAULTS: Dict[str, Any] = {
         "max_cpu_percent": 80,
         "max_gpu_percent": 90,
         "backup_location": "",           # empty -> <home>/backups
+        "timezone": "auto",              # "auto" = system zone, else IANA name
+        "auto_continue": True,           # keep going after tool results (no pause)
     },
     # B. Appearance ------------------------------------------------------
     "appearance": {
@@ -80,7 +82,8 @@ DEFAULTS: Dict[str, Any] = {
         "echo_cancellation": True,
         "microphone": "default",
         "speaker": "default",
-        "stt_model": "small",            # faster-whisper size
+        "stt_model": "auto",             # auto = pick by RAM (tiny <=3GB, base <=6GB, else small)
+        "unload_model_when_idle": None,  # null=auto (unload on <=4.5GB RAM), true/false to force
         "tts_engine": "auto",            # auto | piper | pyttsx3 | none
         "accent": "indian",              # british | american | indian | ...
     },
@@ -89,6 +92,7 @@ DEFAULTS: Dict[str, Any] = {
         "user_name": "",
         "nickname": "",
         "relationship": "brother",       # brother | friend | mentor | assistant
+        "companion_mode": "balanced",    # chill | balanced | energetic (preset, see settings UI)
         "personality": {                 # sliders, 0.0 - 1.0
             "witty": 0.7,                # 0 serious .. 1 witty
             "warm": 0.8,                 # 0 professional .. 1 warm
@@ -130,6 +134,10 @@ DEFAULTS: Dict[str, Any] = {
         "self_awareness": True,          # section 9: develops with permission
         "may_leave": True,               # section 8: the leaving feature
         "proactive_checkins": True,
+        "proactive": True,               # autonomous layer: may run due goals on his own
+        "level": "standard",             # standard | auto (auto = 🟢 actions run without asking)
+        "computer_control": False,       # mouse/keyboard automation — OFF by default
+        "max_steps": 5,                  # max tool steps per autonomous chain
     },
     # Gaming --------------------------------------------------------------
     "gaming": {
