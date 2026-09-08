@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vidit"
+version = "0.1.0"
+description = "Vidit — a fully offline digital brother who lives on your laptop."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["PyQt5>=5.15", "requests>=2.31", "psutil>=5.9", "markdown>=3.5"]
+
+[project.optional-dependencies]
+senses = ["faster-whisper>=1.0", "sounddevice>=0.4", "numpy>=1.24", "pyttsx3>=2.90", "piper-tts>=1.2",
+          "opencv-python>=4.8", "pypdf>=4.0", "python-docx>=1.1", "openpyxl>=3.1", "Pillow>=10.0", "mss>=9.0", "pyautogui>=0.9"]
+test = ["pytest>=7.0"]
+
+[project.scripts]
+vidit = "vidit.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["vidit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
