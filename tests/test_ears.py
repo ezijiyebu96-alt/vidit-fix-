@@ -290,3 +290,23 @@ def test_run_child_reports_failure_and_cleans_up(ears, tmp_path):
     assert res.get("ok") is False
     assert res.get("error")
     assert not list(e.models_dir.glob("_probe_*.json"))
+
+
+# ------------------------------------------------- safe switch & diagnostics
+
+
+def test_vidit_no_ears_kill_switch(ears, monkeypatch):
+    e, cfg = ears
+    monkeypatch.setenv("VIDIT_NO_EARS", "1")
+    assert e.warmup() is False
+    assert e.start() is False
+    assert "hearing disabled" in (e.last_error or "")
+
+
+def test_diag_writes_persistent_log(ears, tmp_path):
+    e, cfg = ears
+    e._diag("hello diag")
+    log_path = e._diag_path
+    assert log_path.exists()
+    assert "hello diag" in log_path.read_text(encoding="utf-8")
+

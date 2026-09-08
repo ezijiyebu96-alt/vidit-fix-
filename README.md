@@ -136,6 +136,14 @@ If you still see the crash (older install or manual setup):
 3. Or pin the known-good engine: `pip install "ctranslate2==4.4.0"` and restart.
 4. If a download was interrupted, delete `%LOCALAPPDATA%\Vidit\models\whisper` (or `~/.vidit/models/whisper`) so he can re-download cleanly — `python -m vidit --doctor` tells you if half-written files are present.
 
+**Still crashing at startup? Use SAFE mode first.** Double-click **`start_vidit_safe.bat`** —
+it opens Vidit with hearing disabled so you can keep chatting while we find the crash.
+If he *still* closes instantly in safe mode, the crash is NOT the speech model — and every
+crash now writes two files that pinpoint it exactly, inside your Vidit folder:
+`%LOCALAPPDATA%\Vidit\logs\faulthandler.log` (thread stacks at the moment of the crash)
+and `%LOCALAPPDATA%\Vidit\logs\ears.log` (every step the speech code tried).
+Send both files and the crash window text to the developer and the exact failing line can be fixed.
+
 **He doesn't hear me.** Run `python -m vidit --doctor` — the *Ears* section shows what is missing. `pip install faster-whisper sounddevice numpy`, allow the microphone when he asks, and use the wake word ("Vidit") or set *Voice activation* to *always*. The speech model is stored in `<home>/models/whisper`; you can point `voice.stt_model` at any local CTranslate2 model folder.
 
 **Where does the speech model come from?** On first microphone use Vidit downloads the faster-whisper model you chose in Settings → Voice → *Speech model* (`small` ≈ 460 MB) from Hugging Face into `<home>/models/whisper`, then runs it fully offline forever after.

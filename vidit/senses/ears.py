@@ -106,6 +106,10 @@ class Ears:
         self._get = config_get
         self.models_dir = Path(models_dir) / "whisper"
         self.bus = event_bus or global_bus
+        # Persistent diagnostic log: <home>/logs/ears.log — survives a crash so
+        # the exact failing step can be read afterwards.
+        self._diag_path = Path(models_dir).parent.parent / "logs" / "ears.log"
+        self._diag("ears init")
 
         self._model = None
         self._stream = None
@@ -132,6 +136,17 @@ class Ears:
 
         self.last_error = ""
         self.awake_until = 0.0
+
+    # ------------------------------------------------------------ diagnostics
+    def _diag(self, msg: str) -> None:
+        """Append a timestamped line to <home>/logs/ears.log (crash-proof log)."""
+        try:
+            p = self._diag_path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+        except OSError:
+            pass
 
     # ------------------------------------------------------------
     # status
@@ -168,6 +183,8 @@ class Ears:
         First use may download the model, so this runs off the UI and audio
         threads and can never block the chat.
         """
+        if os.environ.get("VIDIT_NO_EARS"):
+            return False
         if not self.available():
             return False
         if not bool(self._get("voice.stt_warmup", True)):
@@ -322,15 +339,20 @@ class Ears:
             proc = subprocess.run(cmd, **kwargs)  # noqa: PLW1510
             if proc.returncode < 0:
                 # Killed by a signal — the classic native-crash signature.
+                self._diag(f"child crashed: {args} exit={proc.returncode} stderr={(proc.stderr or '')[-400:]!r}")
                 return {"ok": False, "error": f"probe process crashed (exit code {proc.returncode})"}
             try:
                 data = json.loads(out.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                self._diag(f"child produced no result: {args} stderr={(proc.stderr or proc.stdout or '')[-400:]!r}")
                 return {"ok": False, "error": (proc.stderr or proc.stdout or "")[-1000:] or "probe produced no result"}
+            self._diag(f"child ok: {args} -> {str(data)[:300]}")
             return data
         except subprocess.TimeoutExpired:
+            self._diag(f"child timed out: {args}")
             return {"ok": False, "error": f"timed out after {int(timeout)}s (first download can be slow)"}
         except OSError as exc:
+            self._diag(f"child could not run: {args} -> {exc}")
             return {"ok": False, "error": f"could not run probe: {exc}"}
         finally:
             try:
@@ -371,6 +393,7 @@ class Ears:
             "Vidit stays fully offline after this."
         )
         self.bus.emit("ears.model_downloading", size=size)
+        self._diag(f"downloading model size={size}")
         log.info("Downloading whisper model %r into %s", size, self.models_dir)
         result = self._run_child(["download", size, str(self.models_dir)], self._probe_timeout())
         if not result or not result.get("ok"):
@@ -457,6 +480,7 @@ class Ears:
                 self._model_error = ""
                 self.last_error = ""
                 self._write_cache(self._stt_size(), snapshot, candidate)
+                self._diag(f"model ready compute_type={candidate} snapshot={snapshot}")
                 log.info("Whisper model loaded successfully (%s)", candidate)
                 return model
             except EarsModelError:
@@ -470,6 +494,7 @@ class Ears:
             "The speech model failed to load: " + err +
             " (tried " + ", ".join(tried) + "). See Settings → Voice → STT compute type."
         )
+        self._diag(f"model load failed: tried={tried} err={err!r}")
         raise EarsModelError(self._model_error)
 
     def _ensure_model(self):
@@ -492,11 +517,13 @@ class Ears:
                 if self._model_state != "error":
                     self._model_state = "error"
                     self._model_error = str(sys.exc_info()[1])
+                self._diag(f"ensure_model failed: {self._model_error[:500]}")
                 raise
             except Exception as exc:  # noqa: BLE001
                 self._model_state = "error"
                 self._model_error = f"speech model error: {exc}"
                 log.exception("Failed to load Whisper model")
+                self._diag(f"ensure_model crashed: {exc!r}")
                 raise EarsModelError(self._model_error)
 
     def _load_model(self):
@@ -587,6 +614,11 @@ class Ears:
     def start(self) -> bool:
         if self._listening.is_set():
             return True
+
+        if os.environ.get("VIDIT_NO_EARS"):
+            self.last_error = "hearing disabled — start with start_vidit.bat (not start_vidit_safe.bat) to use the mic"
+            self._diag("start refused: VIDIT_NO_EARS is set")
+            return False
 
         if not self.available():
             self.last_error = "faster-whisper / sounddevice / numpy not installed"

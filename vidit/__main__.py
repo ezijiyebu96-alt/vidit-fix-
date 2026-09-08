@@ -3,6 +3,24 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+
+def _enable_crash_forensics(home: str | None) -> None:
+    """If Vidit ever dies with a native crash (Windows 'access violation'),
+    write the Python thread stacks to <home>/logs/faulthandler.log so the
+    exact failing line can be found afterwards."""
+    try:
+        import faulthandler
+
+        from .config import default_home
+
+        root = Path(home) if home else default_home()
+        logs = root / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        faulthandler.enable(file=open(logs / "faulthandler.log", "a", buffering=1))
+    except Exception:  # noqa: BLE001 — forensics must never stop startup
+        pass
 
 
 def main(argv=None) -> int:
@@ -12,6 +30,7 @@ def main(argv=None) -> int:
     parser.add_argument("--quiet", action="store_true", help="no voice output")
     parser.add_argument("--doctor", action="store_true", help="check the environment and exit")
     args = parser.parse_args(argv)
+    _enable_crash_forensics(args.home)
 
     if args.doctor:
         from .doctor import run_doctor
