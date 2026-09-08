@@ -877,12 +877,13 @@ def test_chat_thread_reaped_not_dangling() -> None:
     win._reap_chat_thread()  # connected to thread.finished
     assert win._thread is None and win._worker is None  # no dangling refs
 
-    # the send() guard must rely on _busy (plain bool), never the dead thread:
+    # the send() guard must rely on _busy (plain bool), never the dead thread
+    # (checked as the old guard PATTERN, so explanatory comments don't trip it):
     import inspect
 
     guard = inspect.getsource(cw.ChatWindow.send)
-    assert "self._busy" in guard
-    assert "self._thread.isRunning()" not in guard
+    assert "if not text or self._busy:" in guard
+    assert "self._thread and self._thread.isRunning()" not in guard
 
     # shutdown_worker tolerates a dead thread without raising:
     win._thread = DeadThread()
