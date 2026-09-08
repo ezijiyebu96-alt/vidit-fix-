@@ -109,6 +109,12 @@ experimental.
 
 | Symptom | Fix |
 | --- | --- |
+| Build window closed instantly before you could read anything | you had the **old** script — the current `build_windows.bat` stays open and pauses at the end; get the latest one from the repo |
+| `[X] Python 3.10 or newer was NOT found` | install Python 3.11/3.12 **from python.org** and tick **"Add python.exe to PATH"** on the first installer screen; the Microsoft Store Python does NOT work |
+| `[!] Some OPTIONAL packages failed` (step 4) | harmless — senses are optional; Vidit builds and runs without them (doctor shows what's missing) |
+| Tests failed on your machine (prompt) | the same suite passes on GitHub's Windows builders — answer `y` to build anyway, or share the failing test |
+| PyInstaller failed / antivirus messages | add the project folder to Windows Defender exclusions, delete `.venv-win`, run the script again |
+| `Could not create the virtual environment` | move the project out of `C:\Program Files` (not writable) — Desktop/Documents is fine |
 | SmartScreen warning | More info → Run anyway (unsigned build) |
 | App starts then closes instantly | run `Vidit.exe --doctor`; check `%LOCALAPPDATA%\Vidit\logs\vidit.log` |
 | "GUI unavailable" | reinstall with `build_windows.bat` (PyQt5 must be bundled) |
