@@ -1,0 +1,83 @@
+name: build-windows
+
+# Builds the real Windows 11 x64 application (Vidit.exe) with PyInstaller,
+# runs the test suite on Windows, verifies the package, and uploads
+# Vidit-Windows11-x64.zip as an artifact.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "arena/**"]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      PROJECT_DIR: "vidit fix/vidit-project-01--arena-01a08022-vidit-project-01"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11 (x64)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+          cache: "pip"
+          cache-dependency-path: |
+            **/requirements.txt
+            **/requirements-senses.txt
+
+      - name: Install dependencies (core + senses + PyInstaller)
+        working-directory: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-senses.txt
+          python -m pip install "pyinstaller>=6.0"
+
+      - name: Run tests on Windows (quality gate)
+        working-directory: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01
+        run: python -m pytest tests -q
+
+      - name: Build Vidit.exe (onedir)
+        working-directory: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01
+        run: python -m PyInstaller --noconfirm --clean Vidit.spec
+
+      - name: Packaging checks
+        working-directory: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01
+        run: |
+          set -e
+          test -f dist/Vidit/Vidit.exe || { echo "FAIL: Vidit.exe missing"; exit 1; }
+          test -d dist/Vidit/_internal/vidit/ui/assets || { echo "FAIL: UI assets not bundled"; exit 1; }
+          test -f dist/Vidit/_internal/AUTONOMY.md || { echo "FAIL: AUTONOMY.md not bundled"; exit 1; }
+          size=$(stat -c%s dist/Vidit/Vidit.exe)
+          echo "Vidit.exe launcher size: $size bytes"
+          # --version must exit 0 (windowed app: stdout is suppressed, code matters)
+          ./dist/Vidit/Vidit.exe --version
+          echo "version exit: $?"
+          # --doctor must exit 0 (all required modules bundled)
+          ./dist/Vidit/Vidit.exe --doctor
+          code=$?
+          echo "doctor exit: $code"
+          test "$code" -eq 0 || { echo "FAIL: doctor exit code $code"; exit 1; }
+          echo "PACKAGING CHECKS PASSED"
+
+      - name: Package Vidit-Windows11-x64.zip
+        working-directory: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/Vidit -DestinationPath Vidit-Windows11-x64.zip -Force
+          Get-Item Vidit-Windows11-x64.zip | Select-Object Name, Length
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vidit-Windows11-x64
+          path: ${{ github.workspace }}/vidit fix/vidit-project-01--arena-01a08022-vidit-project-01/Vidit-Windows11-x64.zip
+          if-no-files-found: error

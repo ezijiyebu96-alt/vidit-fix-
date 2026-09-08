@@ -144,6 +144,57 @@ class SystemControl:
         except Exception:  # noqa: BLE001
             return ""
 
+    @staticmethod
+    def list_windows(limit: int = 20) -> List[Dict[str, Any]]:
+        """Visible top-level windows (title + owning app). Windows 11 via the
+        Win32 API; other platforms get an honest empty list."""
+        if not sys.platform.startswith("win"):
+            return []
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            windows: List[Dict[str, Any]] = []
+
+            def _cb(hwnd: int, _lparam: int) -> bool:
+                if len(windows) >= limit:
+                    return False
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.strip()
+                if not title:
+                    return True
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                app = ""
+                try:
+                    k32 = ctypes.windll.kernel32
+                    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                    h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+                    if h:
+                        name = ctypes.create_unicode_buffer(260)
+                        size = wintypes.DWORD(260)
+                        if k32.QueryFullProcessImageNameW(h, 0, name, ctypes.byref(size)):
+                            app = Path(name.value).name
+                        k32.CloseHandle(h)
+                except Exception:  # noqa: BLE001
+                    pass
+                windows.append({"title": title[:120], "app": app, "hwnd": hwnd})
+                return True
+
+            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            user32.EnumWindows(WNDENUMPROC(_cb), 0)
+            return windows
+        except Exception:  # noqa: BLE001
+            return []
+
+
     # ----------------------------------------------------------- clipboard
     @staticmethod
     def clipboard_read() -> str:
@@ -242,6 +293,15 @@ def parse_when(text: str, now: Optional[datetime] = None) -> Optional[datetime]:
 
 
 def make_system_tools(system: SystemControl, backups_dir: Path) -> List[Tool]:
+    def _windows(args: str, ctx: ToolContext) -> ToolResult:
+        if not ctx.permissions.check(Capability.SCREEN, "to list open windows (titles + apps only, no content)"):
+            return ToolResult(False, "You haven't allowed me to look at the screen right now.")
+        wins = SystemControl.list_windows(20)
+        if not wins:
+            return ToolResult(True, "I can't list windows on this platform (window listing is a Windows 11 feature).")
+        lines = [f"• {w['title']}  ({w['app'] or 'unknown app'})" for w in wins]
+        return ToolResult(True, "\n".join(lines), {"windows": wins})
+
     def _stats(args: str, ctx: ToolContext) -> ToolResult:
         s = system.stats()
         lines = [f"{k}: {v}" for k, v in s.items() if k != "gpu"]
@@ -288,6 +348,7 @@ def make_system_tools(system: SystemControl, backups_dir: Path) -> List[Tool]:
 
     return [
         Tool("system_stats", "CPU, RAM, GPU, disk, battery and time.", "", _stats),
+        Tool("windows", "List the open windows (titles + app names) so I can see what's on screen.", "", _windows),
         Tool("open", "Open an app, file, folder or URL (asks permission).", "notepad | C:/path | https://…", _open, dangerous=True),
         Tool("processes", "Top running processes.", "", _processes),
         Tool("clipboard", "Read the clipboard, or write to it with 'write <text>'.", "write hello", _clipboard),

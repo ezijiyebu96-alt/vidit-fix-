@@ -11,8 +11,14 @@ def main(argv=None) -> int:
     parser.add_argument("--home", default=None, help="folder where Vidit keeps his memory (default: ~/.vidit or %%LOCALAPPDATA%%/Vidit)")
     parser.add_argument("--quiet", action="store_true", help="no voice output")
     parser.add_argument("--doctor", action="store_true", help="check the environment and exit")
+    parser.add_argument("--version", action="store_true", help="print name + version and exit")
     args = parser.parse_args(argv)
 
+    if args.version:
+        from . import NAME, VERSION
+
+        print(f"{NAME} {VERSION}" + (" (packaged build)" if getattr(sys, "frozen", False) else ""))
+        return 0
     if args.doctor:
         from .doctor import run_doctor
 

@@ -25,3 +25,10 @@ scratch/
 Thumbs.db
 .idea/
 .vscode/
+
+# PyInstaller / local build outputs
+build/
+dist/
+release/
+.venv-win/
+*.spec.bak

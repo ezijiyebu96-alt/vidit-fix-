@@ -19,12 +19,13 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..guardian import Capability
+from ..utils import find_sandbox_python
 from .base import Tool, ToolContext, ToolResult
 
 log = logging.getLogger("vidit.tools.code")
 
 RUNNERS: Dict[str, List[str]] = {
-    "python": [sys.executable, "-I"],
+    "python": [sys.executable, "-I"],  # replaced by find_sandbox_python() in __init__ (frozen-safe)
     "javascript": ["node"],
     "node": ["node"],
     "bash": ["bash"],
@@ -39,6 +40,7 @@ class CodeTools:
         self.llm = llm
         self.scratch = Path(scratch_dir)
         self.scratch.mkdir(parents=True, exist_ok=True)
+        RUNNERS["python"] = find_sandbox_python() or []
 
     # ------------------------------------------------------------ analysis
     @staticmethod
@@ -87,6 +89,10 @@ class CodeTools:
         language = language.lower()
         runner = RUNNERS.get(language)
         if not runner:
+            if language == "python":
+                return {"ok": False, "stdout": "", "seconds": 0.0,
+                        "stderr": "No system Python found for the code sandbox (packaged app). "
+                                  "Install Python 3 from python.org (or 'py' via the launcher) and restart Vidit."}
             return {"ok": False, "stdout": "", "stderr": f"I can't run {language} yet.", "seconds": 0.0}
         suffix = EXTENSIONS[language]
         with tempfile.NamedTemporaryFile("w", suffix=suffix, dir=self.scratch, delete=False, encoding="utf-8") as fh:

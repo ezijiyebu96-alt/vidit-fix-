@@ -34,7 +34,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, List, Optional
 
 from ..events import EventBus, bus as global_bus
-from ..utils import safe_filename
+from ..utils import find_sandbox_python, safe_filename
 
 log = logging.getLogger("vidit.brain.repair")
 
@@ -383,7 +383,14 @@ class SelfRepair:
             """
         )
         try:
-            proc = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=timeout,
+            runner = find_sandbox_python()
+            if runner is None:
+                # Packaged app without a system Python: the subprocess smoke
+                # test cannot run. The static scan above still applies, and
+                # this is logged — never a silent pass.
+                log.warning("skill smoke test skipped — no system Python in packaged app")
+                return None
+            proc = subprocess.run(runner + ["-c", code], capture_output=True, text=True, timeout=timeout,
                                   cwd=str(self.skills_dir))
         except subprocess.TimeoutExpired:
             return "skill timed out during smoke test"

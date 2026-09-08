@@ -4,10 +4,43 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import re
+import shutil
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List, Optional
+
+
+def find_sandbox_python() -> Optional[List[str]]:
+    """Command prefix for running user/skill code in a subprocess.
+
+    From source this is simply ``sys.executable -I``. Inside a PyInstaller
+    bundle (Vidit.exe) ``sys.executable`` is Vidit itself, so we look for a
+    real system Python instead — never the packaged app. Returns None when
+    no usable interpreter exists (packaged app without Python on PATH).
+    """
+    if not getattr(sys, "frozen", False):
+        return [sys.executable, "-I"]
+    exe_self = Path(sys.executable).resolve()
+    candidates = [("py", ["py", "-3", "-I"]), ("python", ["python", "-I"])]
+    if not sys.platform.startswith("win"):
+        candidates.append(("python3", ["python3", "-I"]))
+    for which_name, prefix in candidates:
+        exe = shutil.which(which_name)
+        if exe and Path(exe).resolve() != exe_self:
+            return prefix
+    return None
+
+
+def probe_run(args: List[str], timeout: float = 10.0) -> subprocess.CompletedProcess:
+    """Run a short command, capturing output (never raises on timeout)."""
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError) as exc:  # noqa: PERF203
+        return subprocess.CompletedProcess(args, 1, "", str(exc))
+
 
 
 def setup_logging(logs_dir: Path, level: int = logging.INFO) -> None:
