@@ -102,6 +102,17 @@ not claimed here.
 
 ## 6. Voice commands
 
+At startup Vidit **auto-listens for his wake word** when Voice activation is
+`wake_word` or `always` (the default): the status line shows "warming ears"
+while the offline voice model is prepared — the **first time only** this
+downloads once (~75 MB, needs internet); the UI never freezes during the
+download because it happens in the background. When you see
+"listening — just say \"vidit\"", speak: *"Vidit, open Photoshop"*.
+The 🎤 Mic button toggles listening manually. If Ollama isn't installed, the
+status line tells you he's on his simple fallback mind.
+
+
+
 Real, in the source (`vidit/senses/ears.py`): wake word **"Vidit"** → offline
 faster-whisper STT → the brain plans and uses tools. Examples that work with
 existing tools: *"Vidit, open Photoshop"*, *"remind me…", "organize my
@@ -127,7 +138,7 @@ experimental.
 | Voice/TTS crashes the app | Safe mode starts with voice off; Settings → Voice → engine `pyttsx3`; the crash log names the failing component |
 | "GUI unavailable" | reinstall with `build_windows.bat` (PyQt5 must be bundled) |
 | No voice output | Settings → Voice engine: pyttsx3 (built-in Windows SAPI). Piper needs a standalone `piper.exe` on PATH in the packaged build |
-| Ears disabled | `pip` deps are bundled; check mic privacy setting + that the whisper model downloaded |
+| Wake word doesn't react | the status line must say "listening"; check mic privacy setting; the first warm-up needs internet once; Settings → Voice → activation `wake_word`; 'start with Windows' now really registers (Settings → General → Startup behaviour) |
 | "Couldn't find an app called X" | use the exe name (`mspaint`, `Photoshop`) or full path; ShellExecute resolves App Paths registry entries |
 | Code sandbox says "No system Python found" | the packaged app intentionally doesn't run scripts on itself — install Python 3 (or `py` launcher) for the `run_code`/skills sandbox |
 | Antivirus flags the exe | UPX is disabled; rebuild yourself or sign the binary |

@@ -28,7 +28,7 @@ def have(module: str) -> bool:
 hidden = ["vidit.autonomy"]  # dynamic import chain is static enough, but be explicit
 for mod in (
     # senses (all optional at runtime, bundled when present)
-    "faster_whisper", "tokenizers", "ctranslate2", "av", "sounddevice",
+    "faster_whisper", "faster_whisper.utils", "huggingface_hub", "tokenizers", "ctranslate2", "av", "sounddevice",
     "piper", "pyttsx3.drivers", "cv2", "mss", "pyautogui", "pyscreeze",
     "pygetwindow", "mouseinfo",
     # files / docs stack
@@ -57,8 +57,13 @@ for mod, pkg in (("sounddevice", "_sounddevice_data"), ("cv2", None)):
         try:
             top = __import__(mod)
             base = Path(top.__file__).parent
-            if pkg and (base / pkg).exists():
-                datas.append((str(base / pkg), f"{mod}/{pkg}"))
+            if pkg:
+                # the sounddevice wheel may put _sounddevice_data inside the
+                # package or at site-packages root - collect whichever exists
+                for cand in (base / pkg, base.parent / pkg):
+                    if cand.exists():
+                        datas.append((str(cand), f"{mod}/{pkg}"))
+                        break
         except Exception:  # noqa: BLE001
             pass
 

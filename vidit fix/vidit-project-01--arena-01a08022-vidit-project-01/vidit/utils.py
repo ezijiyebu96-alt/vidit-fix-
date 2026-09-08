@@ -63,6 +63,30 @@ def mark_clean_exit() -> None:
         pass
 
 
+def apply_autostart(mode: str, exe: str | None = None) -> bool:
+    """Register/unregister Vidit to start with Windows (HKCU Run key).
+
+    Only acts inside the frozen Windows app; from source this is a no-op.
+    'with_system' registers the exe; any other mode removes the entry.
+    Returns True when the registry was actually touched.
+    """
+    if not (getattr(sys, "frozen", False) and sys.platform.startswith("win")):
+        return False
+    import winreg
+
+    exe = exe or sys.executable
+    run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as key:
+        if mode == "with_system":
+            winreg.SetValueEx(key, "Vidit", 0, winreg.REG_SZ, f'"{exe}"')
+        else:
+            try:
+                winreg.DeleteValue(key, "Vidit")
+            except FileNotFoundError:
+                pass
+    return True
+
+
 
 def setup_logging(logs_dir: Path, level: int = logging.INFO) -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)

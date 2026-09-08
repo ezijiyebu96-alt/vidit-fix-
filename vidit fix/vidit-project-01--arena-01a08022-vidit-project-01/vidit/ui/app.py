@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -40,6 +41,7 @@ class _Bridge(QObject):
     leaving = pyqtSignal(str)
     # ears lifecycle → mic button / orb / status line feedback
     listening = pyqtSignal(bool)
+    earsReady = pyqtSignal(bool)   # background voice-model warm-up finished
     utterance = pyqtSignal(float)
     transcript = pyqtSignal(str, bool, bool)
 
@@ -76,6 +78,12 @@ class ViditApp:
         self._wire()
         self.apply_theme()
         self._apply_orb_style()
+        try:
+            from ..utils import apply_autostart
+
+            apply_autostart(self.vidit.config.get("general.startup_behavior", "manual"))
+        except Exception:  # noqa: BLE001 - autostart must never block boot
+            pass
 
     # ------------------------------------------------------------- wiring
     def _wire(self) -> None:
@@ -97,6 +105,7 @@ class ViditApp:
         self.bridge.voiceStarted.connect(lambda: self._set_speaking(True))
         self.bridge.voiceFinished.connect(lambda: self._set_speaking(False))
         self.bridge.wake.connect(self._on_wake)
+        self.bridge.earsReady.connect(self._on_ears_ready)
         self.bridge.settings.connect(self._on_setting)
         self.bridge.leaving.connect(self._on_leaving)
         self.bridge.listening.connect(self._on_listening)
@@ -346,12 +355,22 @@ class ViditApp:
         self.chat._messages = []
         self.chat._render_all()
         self.chat._load_conversations()
+        try:
+            if not self.vidit.llm.status().get("ollama_reachable"):
+                self.chat.status_label.setText(
+                    "Simple fallback mind - install Ollama and run 'ollama pull qwen2.5:7b' for full intelligence")
+        except Exception:  # noqa: BLE001
+            pass
+        activation = self.vidit.config.get("voice.activation", "wake_word")
         if self.safe_mode:
             self.chat.status_label.setText(
                 "Safe mode: voice is off because the last run crashed early — chat works. "
                 "Quit and reopen Vidit to try voice again.")
-        elif self.vidit.config.get("voice.activation") == "always":
-            self.vidit.start_listening()
+        elif activation in ("wake_word", "always") and self.vidit.ears.available():
+            # Warm up in the background (download once), then start listening
+            # from the MAIN thread (CTranslate2 must be built there).
+            self.chat.status_label.setText("warming ears - the first time this downloads the voice model once...")
+            threading.Thread(target=self._warm_ears, daemon=True, name="vidit-ears-warmup").start()
         code = self.qt.exec_()
         try:
             self.chat.shutdown_worker()
@@ -362,6 +381,33 @@ class ViditApp:
 
         mark_clean_exit()
         return code
+
+    # ---------------------------------------------- voice warm-up (boot)
+    def _warm_ears(self) -> None:
+        """Worker: download the whisper model if needed (network only).
+        The model LOAD happens on the main thread in start_listening()."""
+        try:
+            self.vidit.ears.download_model()
+            self.bridge.earsReady.emit(True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ears warm-up failed: %s", exc)
+            self.bridge.earsReady.emit(False)
+
+    def _on_ears_ready(self, ok: bool) -> None:
+        """Main thread: the model files are ready -> preload + listen."""
+        if not self.vidit.ears.available():
+            self.chat.status_label.setText("voice unavailable: install faster-whisper, sounddevice and numpy")
+            return
+        if not ok:
+            self.chat.status_label.setText(
+                "voice model could not download (needs internet once) - the mic button will try again")
+            return
+        if self.vidit.start_listening():
+            self.chat.status_label.setText(
+                f"listening - just say \"{self.vidit.config.get('general.wake_word', 'vidit')}\" to wake him")
+        else:
+            self.chat.status_label.setText(
+                f"voice unavailable: {getattr(self.vidit.ears, 'last_error', '') or 'microphone busy or missing'}")
 
     def quit(self) -> None:
         # Reap a running chat worker first so its QThread is never destroyed

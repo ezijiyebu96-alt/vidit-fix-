@@ -41,6 +41,9 @@ class Ears:
 
         self._model = None
         self._stream = None
+        # Pre-downloaded model folder (background download). The LOAD itself
+        # still happens on the main thread - see preload().
+        self._local_model_dir: Path | None = None
 
         # CTranslate2 (faster-whisper) must be *constructed* exactly once, on the
         # main/UI thread — see the note on preload(). The lock serialises any
@@ -169,10 +172,11 @@ class Ears:
         self._effective_model = size
 
         last_exc: Optional[Exception] = None
+        model_ref = str(self._local_model_dir) if self._local_model_dir else size
         for compute_type in self._COMPUTE_TYPES:
             try:
                 self._model = WhisperModel(
-                    size,
+                    model_ref,
                     device="cpu",
                     compute_type=compute_type,
                     download_root=str(self.models_dir),
@@ -229,6 +233,50 @@ class Ears:
             # let start_listening()/status() surface it.
             log.exception("Whisper preload failed")
             return False
+
+    def resolved_model_size(self) -> str:
+        """The whisper size that will be loaded ('auto' already resolved)."""
+        size, _threads, _auto = self._resolve_model_size()
+        return size
+
+    def model_downloaded(self) -> bool:
+        """True when the model files are already on disk (no download needed)."""
+        size = self.resolved_model_size()
+        if (self.models_dir / f"mdl-{size}" / "model.bin").exists():
+            self._local_model_dir = self.models_dir / f"mdl-{size}"
+            return True
+        return False
+
+    def download_model(self, status_cb=None) -> Optional[str]:
+        """Download the whisper model files in the BACKGROUND (network only —
+        no CTranslate2/WhisperModel construction here; that must stay on the
+        main/UI thread, see preload()). Returns the local folder path, or
+        None when faster-whisper lacks a downloader or the download failed.
+
+        After a successful download, preload() loads from this folder, so the
+        UI thread never blocks on a network fetch.
+        """
+        size = self.resolved_model_size()
+        target = self.models_dir / f"mdl-{size}"
+        if (target / "model.bin").exists():
+            self._local_model_dir = target
+            return str(target)
+        try:
+            from faster_whisper.utils import download_model  # type: ignore
+        except Exception:
+            return None  # older faster-whisper: preload() will download inline
+        try:
+            if status_cb:
+                status_cb(f"downloading the {size} voice model (once)...")
+            path = download_model(size, output_dir=str(target))
+            self._local_model_dir = target
+            if status_cb:
+                status_cb("voice model ready")
+            return str(path or target)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("voice model download failed: %s", exc)
+            self.last_error = f"voice model download failed: {exc}"
+            return None
 
     def reload_model(self) -> None:
         """Drop the loaded Whisper model so the next preload() rebuilds it.

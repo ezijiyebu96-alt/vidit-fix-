@@ -726,3 +726,57 @@ def test_windows_tool_gated_by_guardian(home: Path) -> None:
     tools = {t.name: t for t in make_system_tools(SystemControl(Path(tempfile.gettempdir())), home / "b")}
     res = tools["windows"].run("", ctx)
     assert not res.ok  # Guardian gate applies to the new tool
+
+
+# ------------------------------------------------------------- wake / autostart
+def test_apply_autostart_noop_from_source() -> None:
+    from vidit.utils import apply_autostart
+
+    assert apply_autostart("with_system") is False  # never touches registry from source
+
+
+def test_apply_autostart_frozen_windows(monkeypatch, tmp_path: Path) -> None:
+    import sys as _sys
+    import types
+
+    calls: list = []
+
+    class FakeKey:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open_key(root, path, reserved, access):
+        assert "Run" in path
+        return FakeKey()
+
+    fake = types.ModuleType("winreg")
+    fake.HKEY_CURRENT_USER = 0x80000001
+    fake.KEY_SET_VALUE = 0x0002
+    fake.REG_SZ = 1
+    fake.OpenKey = fake_open_key
+    fake.SetValueEx = lambda key, name, res, typ, val: calls.append(("set", name, val))
+    fake.DeleteValue = lambda key, name: calls.append(("del", name)) if name != "missing" else (_ for _ in ()).throw(FileNotFoundError())
+
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    monkeypatch.setattr(_sys, "platform", "win32")
+
+    from vidit.utils import apply_autostart
+
+    assert apply_autostart("with_system", exe=r"C:\Apps\Vidit\Vidit.exe") is True
+    assert calls[-1] == ("set", "Vidit", '"C:\\Apps\\Vidit\\Vidit.exe"')
+    assert apply_autostart("manual") is True  # unregister path (FileNotFoundError tolerated)
+    assert calls[-1] == ("del", "Vidit")
+
+
+def test_ears_download_model_graceful(home: Path) -> None:
+    from vidit.senses.ears import Ears
+
+    cfg_get = lambda key, default=None: default  # noqa: E731
+    ears = Ears(cfg_get, home / "models", event_bus=EventBus())
+    assert ears.resolved_model_size() in ("tiny", "base", "small", "medium", "large-v3")
+    # no faster-whisper installed here -> graceful None, no raise
+    assert ears.download_model() is None
