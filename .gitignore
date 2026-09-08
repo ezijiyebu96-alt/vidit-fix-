@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Vidit's private life never goes to Git (memories, feelings, models, backups)
+.vidit/
+vidit_home/
+*.db
+*.db-wal
+*.db-shm
+emotions.json
+self.json
+models/
+backups/
+exports/
+quarantine/
+scratch/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
