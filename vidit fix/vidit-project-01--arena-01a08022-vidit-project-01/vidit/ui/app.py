@@ -5,6 +5,7 @@ Modes (Constitution section 3A): orb · chat · hud · stealth · fullscreen · 
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any, Dict, Optional
 
@@ -53,7 +54,15 @@ class ViditApp:
 
         self.bridge = _Bridge()
         self.prompter = GuiPrompter()
-        self.vidit = Vidit(home=home, prompter=self.prompter)
+        # Safe mode: the launcher sets VIDIT_SAFE_MODE=1 when the previous
+        # session crashed within seconds of boot — start with voice and
+        # auto-listening off so a bad TTS/GPU state can never loop crashes.
+        self.safe_mode = os.environ.get("VIDIT_SAFE_MODE") == "1"
+        if self.safe_mode:
+            log.warning("starting in SAFE MODE (voice off — previous session crashed)")
+        self.vidit = Vidit(home=home, prompter=self.prompter, quiet=self.safe_mode)
+        if self.safe_mode:
+            self.vidit.config.set("voice.enabled", False, save=False)
         self.mode = "orb"
         self._toasts = []
 
@@ -337,7 +346,11 @@ class ViditApp:
         self.chat._messages = []
         self.chat._render_all()
         self.chat._load_conversations()
-        if self.vidit.config.get("voice.activation") == "always":
+        if self.safe_mode:
+            self.chat.status_label.setText(
+                "Safe mode: voice is off because the last run crashed early — chat works. "
+                "Quit and reopen Vidit to try voice again.")
+        elif self.vidit.config.get("voice.activation") == "always":
             self.vidit.start_listening()
         code = self.qt.exec_()
         try:
@@ -345,6 +358,9 @@ class ViditApp:
         except Exception:  # noqa: BLE001
             pass
         self.vidit.sleep()
+        from ..utils import mark_clean_exit
+
+        mark_clean_exit()
         return code
 
     def quit(self) -> None:

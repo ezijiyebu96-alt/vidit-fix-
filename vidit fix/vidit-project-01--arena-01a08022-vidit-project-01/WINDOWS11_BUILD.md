@@ -123,6 +123,8 @@ experimental.
 | `Could not create the virtual environment` | move the project out of `C:\Program Files` (not writable) — Desktop/Documents is fine |
 | SmartScreen warning | More info → Run anyway (unsigned build) |
 | App starts then closes instantly | run `Vidit.exe --doctor`; check `%LOCALAPPDATA%\Vidit\logs\vidit.log` |
+| **Crashes ~10 s after start, repeatedly** | the app logs the exact failing stage to `%LOCALAPPDATA%\Vidit\logs\vidit_crash.log` and the **next launch starts in Safe mode** (voice off, chat works) which breaks the loop — reopen Vidit normally afterwards. If the crash log shows nothing at all, your antivirus is killing the unsigned exe — add an exclusion for the Vidit folder. GPU-driver crashes are prevented (senses run CPU-only; set `VIDIT_ALLOW_GPU=1` to override) |
+| Voice/TTS crashes the app | Safe mode starts with voice off; Settings → Voice → engine `pyttsx3`; the crash log names the failing component |
 | "GUI unavailable" | reinstall with `build_windows.bat` (PyQt5 must be bundled) |
 | No voice output | Settings → Voice engine: pyttsx3 (built-in Windows SAPI). Piper needs a standalone `piper.exe` on PATH in the packaged build |
 | Ears disabled | `pip` deps are bundled; check mic privacy setting + that the whisper model downloaded |

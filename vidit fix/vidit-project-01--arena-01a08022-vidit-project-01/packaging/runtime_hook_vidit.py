@@ -24,3 +24,11 @@ if sys.platform.startswith("win"):
 # pyscreeze (used by pyautogui screenshots) must find Pillow — it does, but
 # be explicit that pyautogui's failsafe corner is the emergency brake.
 os.environ.setdefault("PYAUTOGUI_FAILSAFE", "1")
+
+# Vidit's senses are CPU-only by design (whisper int8 on CPU, piper/pyttsx3).
+# Keep CUDA DLLs out of the process unless the user explicitly opts in - on
+# some NVIDIA driver setups a GPU probe inside a bundled app access-violates
+# seconds after boot (the classic "crashes ~10 s in" report).
+if not os.environ.get("VIDIT_ALLOW_GPU"):
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+

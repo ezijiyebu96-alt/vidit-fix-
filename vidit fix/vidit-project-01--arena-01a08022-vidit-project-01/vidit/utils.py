@@ -42,6 +42,27 @@ def probe_run(args: List[str], timeout: float = 10.0) -> subprocess.CompletedPro
         return subprocess.CompletedProcess(args, 1, "", str(exc))
 
 
+def mark_clean_exit() -> None:
+    """Tell the frozen launcher this session ended normally, so the next
+    boot doesn't go into safe mode (best effort; no-op from source)."""
+    import json
+    import os
+    import time
+
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        home = os.environ.get("VIDIT_HOME") or os.path.join(
+            os.environ.get("LOCALAPPDATA", ""), "Vidit"
+        )
+        marker = os.path.join(home, "boot_state.json")
+        os.makedirs(home, exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as fh:
+            json.dump({"started": time.time(), "clean": True, "crashes": 0}, fh)
+    except OSError:
+        pass
+
+
 
 def setup_logging(logs_dir: Path, level: int = logging.INFO) -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
