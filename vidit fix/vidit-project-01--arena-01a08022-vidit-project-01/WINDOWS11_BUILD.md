@@ -150,9 +150,9 @@ experimental.
 
 | Item | Status |
 | --- | --- |
-| Test suite (this repo, Python 3.11) | **VERIFIED** — 42 passed / 0 failed / 0 skipped |
-| Spec logic (hidden imports, datas, frozen entry) | **VERIFIED** via a Linux PyInstaller build of the same spec running `--doctor` from the frozen bundle |
-| Windows CI build + packaging checks | **VERIFIED BY CI DESIGN** — runs automatically on `windows-latest`; check the latest `build-windows` run |
-| Windows 11 interactive smoke (GUI, mic, voice) | **NOT VERIFIED IN THIS ENVIRONMENT** |
+| Test suite | **VERIFIED on this repo (Linux, Py 3.11): 42 passed / 0 failed / 0 skipped** AND **VERIFIED on `windows-latest`** (CI quality gate, run 34234979911) |
+| Windows CI build of `Vidit.exe` | **VERIFIED** — GitHub Actions run 34234979911 (`windows-latest`): build, packaging checks (`Vidit.exe --version` exit 0, `Vidit.exe --doctor` exit 0, assets + AUTONOMY.md bundled), zipped & uploaded |
+| Artifact | **`Vidit-Windows11-x64`** — 194,374,529 bytes (~185 MB), from run 34234979911 (Actions → build-windows → Artifacts) |
+| Windows 11 interactive smoke (GUI, mic, voice on real hardware) | **NOT VERIFIED IN THIS ENVIRONMENT** — download the artifact, run `Vidit.exe`; crashes leave `%LOCALAPPDATA%\Vidit\logs\vidit_crash.log` |
 | Photoshop / Illustrator / WhatsApp automation | **NOT VERIFIED** (launch + generic control only, §5) |
 | Mouse/keyboard control | **VERIFIED IN SOURCE** (pyautogui behind Guardian, budgeted); runtime on Win11 **NOT VERIFIED HERE** |
