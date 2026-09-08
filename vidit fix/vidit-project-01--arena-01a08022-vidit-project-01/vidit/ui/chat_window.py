@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -64,6 +65,7 @@ class _ChatWorker(QObject):
 
 class ChatWindow(QWidget):
     replyReady = pyqtSignal(object)
+    earsWarmed = pyqtSignal()   # background voice-model warm-up finished
 
     def __init__(self, vidit: Vidit, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -197,6 +199,7 @@ class ChatWindow(QWidget):
                 "Speech not installed — run:  pip install faster-whisper sounddevice numpy"
             )
         self.mic_btn.toggled.connect(safe_slot(self._toggle_mic))
+        self.earsWarmed.connect(safe_slot(self._start_listening))
         bottom.addWidget(self.mic_btn)
         self.input = _InputBox(self)
         self.input.setPlaceholderText("Talk to Vidit… (Enter to send, Shift+Enter for a new line)")
@@ -506,17 +509,39 @@ class ChatWindow(QWidget):
 
     # -------------------------------------------------------------- voice
     def _toggle_mic(self, on: bool) -> None:
-        if on:
-            # Instant feedback first: preloading Whisper can block this thread
-            # for a few seconds on the very first start, so repaint the button
-            # before the blocking call (still on the main/UI thread — the
-            # model must be built there, see Ears.preload()).
-            self._mic_error = ""
-            self._set_mic_state("listening")
+        if not on:
+            self.vidit.stop_listening()  # ears.stopped event updates the UI
+            return
+        if not self.vidit.ears.available():
+            self._mic_error = "voice needs faster-whisper, sounddevice and numpy (run Vidit.exe --doctor)"
+            self._set_mic_state("error")
+            self.mic_btn.setChecked(False)
+            self.status_label.setText(self._mic_error)
+            return
+        if getattr(self, "_warming_ears", False):
+            return  # warm-up already running — ignore extra clicks
+        self._mic_error = ""
+        self._set_mic_state("listening")
+        if self.vidit.ears.model_downloaded() or self.vidit.ears._model_ready.is_set():
+            # Files are already on disk: the main-thread load is quick.
             self.status_label.setText("waking my ears…")
             QTimer.singleShot(0, self._start_listening)
-        else:
-            self.vidit.stop_listening()  # ears.stopped event updates the UI
+            return
+        # FIRST RUN: the model is not on disk yet. Download it in the
+        # BACKGROUND (network only) so the window never freezes — the load
+        # itself still happens on this thread afterwards (CTranslate2 must
+        # be built on the main/UI thread, see Ears.preload()).
+        self._warming_ears = True
+        self.status_label.setText("warming my ears — the first time this downloads the voice model once…")
+        threading.Thread(target=self._warm_ears_worker, daemon=True, name="vidit-mic-warm").start()
+
+    def _warm_ears_worker(self) -> None:
+        """Worker: fetch the whisper model files (no CTranslate2 here)."""
+        try:
+            self.vidit.ears.download_model()
+        except Exception:  # noqa: BLE001
+            pass
+        self.earsWarmed.emit()
 
     def _start_listening(self) -> None:
         ok = self.vidit.start_listening()
