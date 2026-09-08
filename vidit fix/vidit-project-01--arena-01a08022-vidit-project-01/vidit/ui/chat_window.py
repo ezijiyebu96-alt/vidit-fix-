@@ -381,7 +381,11 @@ class ChatWindow(QWidget):
     # ----------------------------------------------------------- messaging
     def send(self) -> None:
         text = self.input.toPlainText().strip()
-        if not text or (self._thread and self._thread.isRunning()):
+        # Guard with the plain _busy flag — NOT self._thread.isRunning():
+        # the QThread is deleteLater()'d when the reply finishes, so asking
+        # a dead thread isRunning() crashes with "wrapped C/C++ object has
+        # been deleted" (the second-message crash).
+        if not text or self._busy:
             return
         self.input.clear()
         now = time.time()
@@ -403,6 +407,7 @@ class ChatWindow(QWidget):
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
         # Reap the objects when the work is done (no lingering threads/objects).
+        self._thread.finished.connect(self._reap_chat_thread)
         self._thread.finished.connect(self._thread.deleteLater)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.failed.connect(self._worker.deleteLater)
@@ -448,13 +453,25 @@ class ChatWindow(QWidget):
         self._typing_dots = (self._typing_dots + 1) % 4
         self.status_label.setText("thinking" + "." * self._typing_dots)
 
+    def _reap_chat_thread(self) -> None:
+        """Thread finished: drop our Python references so the next send()
+        never touches a Qt object that deleteLater() is about to destroy."""
+        self._thread = None
+        self._worker = None
+
     def shutdown_worker(self, ms: int = 4000) -> None:
         """Wait briefly for a running chat worker so the QThread is never
         destroyed while its thread is still running (crash on exit)."""
         thread = self._thread
-        if thread is not None and thread.isRunning():
-            thread.quit()
-            thread.wait(ms)
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait(ms)
+            except RuntimeError:  # already deleted — nothing to wait for
+                pass
+        self._thread = None
+        self._worker = None
 
     def _stop(self) -> None:
         self.vidit.stop()
