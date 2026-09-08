@@ -108,7 +108,7 @@ class SystemControl:
             try:
                 os.startfile(name)  # type: ignore[attr-defined]
                 return f"Launched {name}"
-            except OSError as exc:
+            except Exception as exc:  # noqa: BLE001 - startfile raises several types
                 return f"Couldn't find an app called {name}: {exc}"
         return f"Couldn't find an app called {name}."
 
@@ -313,10 +313,17 @@ def make_system_tools(system: SystemControl, backups_dir: Path) -> List[Tool]:
     def _open(args: str, ctx: ToolContext) -> ToolResult:
         if not ctx.permissions.check(Capability.SYSTEM_CONTROL, f"to open {args}"):
             return ToolResult(False, "You haven't allowed me to control the system right now.")
-        target = args.strip()
-        if re.match(r"^https?://", target) or Path(target).expanduser().exists():
+        target = args.strip().strip('"')
+        if re.match(r"^[a-zA-Z][\w+.-]*://", target) or Path(target).expanduser().exists():
             return ToolResult(True, system.open_path(str(Path(target).expanduser()) if not target.startswith("http") else target))
-        return ToolResult(True, system.launch_app(target))
+        result = system.launch_app(target)
+        # "open youtube" means the website, not an exe — fall back gracefully
+        if result.startswith("Couldn't") and re.fullmatch(r"[a-zA-Z0-9-]+", target or ""):
+            site = f"https://www.{target.lower()}.com"
+            opened = system.open_path(site)
+            if not opened.startswith("Couldn't"):
+                return ToolResult(True, f"{opened} (no app called '{target}' — opened the website instead)")
+        return ToolResult(True, result)
 
     def _processes(args: str, ctx: ToolContext) -> ToolResult:
         procs = system.running_processes()

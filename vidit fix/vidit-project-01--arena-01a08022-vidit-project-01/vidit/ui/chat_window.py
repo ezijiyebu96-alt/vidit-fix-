@@ -8,6 +8,7 @@ never freezes while the local model is generating.
 from __future__ import annotations
 
 import html
+import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,9 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLay
                              QShortcut, QSplitter, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..core import Reply, Vidit
+
+log = logging.getLogger("vidit.ui.chat")
+from ..utils import safe_slot
 from .widgets import MoodBadge, OrbWidget, WaveformWidget
 
 try:
@@ -289,7 +293,7 @@ class ChatWindow(QWidget):
 
     def _show_pinned(self) -> None:
         pins = self.vidit.memory.pinned()
-        parts = ["<h3>📌 Pinned messages</h3>"] + [self._bubble(m) for m in pins]
+        parts = ["<h3>📌 Pinned messages</h3>"] + [self._bubble_safe(m) for m in pins]
         self.view.setHtml(self._wrap("".join(parts) if pins else "<p>Nothing pinned yet. Right-click a message → Pin.</p>"))
 
     # ------------------------------------------------------------ rendering
@@ -317,6 +321,15 @@ class ChatWindow(QWidget):
         a {{ color: {p['accent2']}; }}
         table {{ font-size: {size - 1}px; }}
         </style></head><body>{body}</body></html>"""
+
+    def _bubble_safe(self, m: Dict[str, Any], highlight: str = "") -> str:
+        try:
+            return self._bubble(m, highlight)
+        except Exception:  # noqa: BLE001 - a broken message must not kill the chat
+            log.exception("could not render one message; showing it as plain text")
+            body = html.escape(str(m.get("content", ""))[:2000]).replace("\n", "<br>")
+            who = html.escape(str(m.get("role", "?")))
+            return f'<div class="bubble"><b>{who}</b><br>{body}</div>'
 
     def _bubble(self, m: Dict[str, Any], highlight: str = "") -> str:
         role = m.get("role", "assistant")
@@ -353,7 +366,7 @@ class ChatWindow(QWidget):
     def _render_all(self) -> None:
         if not self._messages and self.vidit.conversation_id > 0:
             self._messages = self.vidit.memory.messages(self.vidit.conversation_id)
-        parts = [self._bubble(m) for m in self._messages]
+        parts = [self._bubble_safe(m) for m in self._messages]
         self.view.setHtml(self._wrap("".join(parts)))
         self.view.moveCursor(QTextCursor.End)
         self._refresh_mood()
@@ -384,9 +397,9 @@ class ChatWindow(QWidget):
         self._worker = _ChatWorker(self.vidit, text, attachments, reply_to)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.chunk.connect(self._on_chunk)
-        self._worker.finished.connect(self._on_reply)
-        self._worker.failed.connect(self._on_failed)
+        self._worker.chunk.connect(safe_slot(self._on_chunk))
+        self._worker.finished.connect(safe_slot(self._on_reply))
+        self._worker.failed.connect(safe_slot(self._on_failed))
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
         # Reap the objects when the work is done (no lingering threads/objects).
@@ -400,7 +413,7 @@ class ChatWindow(QWidget):
         self.status_label.setText("typing…")
         # Live preview of the streaming answer at the bottom.
         preview = {"role": "assistant", "content": self._stream_buffer, "created_at": time.time(), "id": 0}
-        parts = [self._bubble(m) for m in self._messages] + [self._bubble(preview)]
+        parts = [self._bubble_safe(m) for m in self._messages] + [self._bubble_safe(preview)]
         self.view.setHtml(self._wrap("".join(parts)))
         self.view.moveCursor(QTextCursor.End)
 
@@ -610,7 +623,7 @@ class ChatWindow(QWidget):
             self.input.setFocus()
         elif kind == "thread":
             msgs = self.vidit.memory.thread(message["id"])
-            self.view.setHtml(self._wrap("<h3>Thread</h3>" + "".join(self._bubble(m) for m in msgs)))
+            self.view.setHtml(self._wrap("<h3>Thread</h3>" + "".join(self._bubble_safe(m) for m in msgs)))
             return
         elif kind == "edit":
             new, ok = QInputDialog.getMultiLineText(self, "Edit message", "Message:", message["content"])

@@ -42,6 +42,23 @@ def probe_run(args: List[str], timeout: float = 10.0) -> subprocess.CompletedPro
         return subprocess.CompletedProcess(args, 1, "", str(exc))
 
 
+def safe_slot(fn):
+    """Qt-slot guard: in PyQt5 an exception escaping a slot is FATAL (the
+    app aborts). Wrapping slots with this keeps Vidit alive — the error is
+    logged and the UI carries on instead of one bad message killing him."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception:  # noqa: BLE001
+            logging.getLogger("vidit.ui").exception(
+                "slot %s failed (Vidit keeps running)", getattr(fn, "__name__", fn))
+            return None
+    return wrapper
+
+
 def mark_clean_exit() -> None:
     """Tell the frozen launcher this session ended normally, so the next
     boot doesn't go into safe mode (best effort; no-op from source)."""

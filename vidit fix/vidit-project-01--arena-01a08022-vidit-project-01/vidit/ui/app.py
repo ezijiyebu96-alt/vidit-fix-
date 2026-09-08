@@ -15,6 +15,7 @@ from PyQt5.QtGui import QColor, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon
 
 from ..core import Vidit
+from ..utils import safe_slot
 from .chat_window import ChatWindow
 from .dashboard import SoulDashboard
 from .dialogs import GuiPrompter, Toast
@@ -88,35 +89,35 @@ class ViditApp:
     # ------------------------------------------------------------- wiring
     def _wire(self) -> None:
         bus = self.vidit.bus
-        bus.on("emotion.changed", lambda t, p: self.bridge.emotion.emit(p["state"]))
-        bus.on("message.proactive", lambda t, p: self.bridge.proactive.emit(p["text"]))
-        bus.on("message.voice", lambda t, p: self.bridge.proactive.emit(p["reply"]["text"]))
-        bus.on("vidit.status", lambda t, p: self.bridge.status.emit(p["text"]))
-        bus.on("voice.started", lambda t, p: self.bridge.voiceStarted.emit())
-        bus.on("voice.finished", lambda t, p: self.bridge.voiceFinished.emit())
-        bus.on("ears.wake", lambda t, p: self.bridge.wake.emit())
-        bus.on("settings.changed", lambda t, p: self.bridge.settings.emit(p["key"], p["value"]))
-        bus.on("self.wants_to_leave", lambda t, p: self.bridge.leaving.emit(p["reason"]))
-        bus.on("gaming.report", lambda t, p: self.bridge.proactive.emit(p["summary"]))
+        bus.on("emotion.changed", safe_slot(lambda t, p: self.bridge.emotion.emit(p["state"])))
+        bus.on("message.proactive", safe_slot(lambda t, p: self.bridge.proactive.emit(p["text"])))
+        bus.on("message.voice", safe_slot(lambda t, p: self.bridge.proactive.emit(p["reply"]["text"])))
+        bus.on("vidit.status", safe_slot(lambda t, p: self.bridge.status.emit(p["text"])))
+        bus.on("voice.started", safe_slot(lambda t, p: self.bridge.voiceStarted.emit()))
+        bus.on("voice.finished", safe_slot(lambda t, p: self.bridge.voiceFinished.emit()))
+        bus.on("ears.wake", safe_slot(lambda t, p: self.bridge.wake.emit()))
+        bus.on("settings.changed", safe_slot(lambda t, p: self.bridge.settings.emit(p["key"], p["value"])))
+        bus.on("self.wants_to_leave", safe_slot(lambda t, p: self.bridge.leaving.emit(p["reason"])))
+        bus.on("gaming.report", safe_slot(lambda t, p: self.bridge.proactive.emit(p["summary"])))
 
-        self.bridge.emotion.connect(self._on_emotion)
-        self.bridge.proactive.connect(self._on_proactive)
-        self.bridge.status.connect(lambda s: self.chat.status_label.setText(s))
-        self.bridge.voiceStarted.connect(lambda: self._set_speaking(True))
-        self.bridge.voiceFinished.connect(lambda: self._set_speaking(False))
-        self.bridge.wake.connect(self._on_wake)
-        self.bridge.earsReady.connect(self._on_ears_ready)
-        self.bridge.settings.connect(self._on_setting)
-        self.bridge.leaving.connect(self._on_leaving)
-        self.bridge.listening.connect(self._on_listening)
-        self.bridge.utterance.connect(self.chat.on_utterance)
-        self.bridge.transcript.connect(self._on_ears_transcript)
+        self.bridge.emotion.connect(safe_slot(self._on_emotion))
+        self.bridge.proactive.connect(safe_slot(self._on_proactive))
+        self.bridge.status.connect(safe_slot(lambda s: self.chat.status_label.setText(s)))
+        self.bridge.voiceStarted.connect(safe_slot(lambda: self._set_speaking(True)))
+        self.bridge.voiceFinished.connect(safe_slot(lambda: self._set_speaking(False)))
+        self.bridge.wake.connect(safe_slot(self._on_wake))
+        self.bridge.earsReady.connect(safe_slot(self._on_ears_ready))
+        self.bridge.settings.connect(safe_slot(self._on_setting))
+        self.bridge.leaving.connect(safe_slot(self._on_leaving))
+        self.bridge.listening.connect(safe_slot(self._on_listening))
+        self.bridge.utterance.connect(safe_slot(self.chat.on_utterance))
+        self.bridge.transcript.connect(safe_slot(self._on_ears_transcript))
         self._voice_thinking = False
 
-        bus.on("ears.started", lambda t, p: self.bridge.listening.emit(True))
-        bus.on("ears.stopped", lambda t, p: self.bridge.listening.emit(False))
-        bus.on("ears.utterance", lambda t, p: self.bridge.utterance.emit(float(p.get("seconds", 0.0))))
-        bus.on("ears.transcript", lambda t, p: self.bridge.transcript.emit(p.get("text", ""), bool(p.get("woke")), bool(p.get("awake"))))
+        bus.on("ears.started", safe_slot(lambda t, p: self.bridge.listening.emit(True)))
+        bus.on("ears.stopped", safe_slot(lambda t, p: self.bridge.listening.emit(False)))
+        bus.on("ears.utterance", safe_slot(lambda t, p: self.bridge.utterance.emit(float(p.get("seconds", 0.0)))))
+        bus.on("ears.transcript", safe_slot(lambda t, p: self.bridge.transcript.emit(p.get("text", ""), bool(p.get("woke")), bool(p.get("awake")))))
 
         self.orb.openChat.connect(lambda: self.set_mode("chat"))
         self.orb.openHud.connect(lambda: self.set_mode("hud"))

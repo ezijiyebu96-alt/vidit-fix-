@@ -796,3 +796,60 @@ def test_ears_download_model_graceful(home: Path, monkeypatch) -> None:
     got = ears.download_model()
     assert got and got.endswith(f"mdl-{ears.resolved_model_size()}")
     assert ears.model_downloaded()  # preload() will now use the local folder
+
+
+# ------------------------------------------------------------- crash-proof UI
+def test_safe_slot_swallows_and_keeps_running() -> None:
+    from vidit.utils import safe_slot
+
+    @safe_slot
+    def boom() -> None:
+        raise RuntimeError("slot exploded")
+
+    assert boom() is None  # must NOT raise — app stays alive
+
+    @safe_slot
+    def fine(x: int) -> int:
+        return x * 2
+
+    assert fine(21) == 42  # healthy slots still return values
+
+
+def test_open_tool_website_fallback(home: Path) -> None:
+    """'open youtube' (bare word) falls back to the website, never errors out."""
+    import tempfile
+
+    from vidit.tools.base import ToolContext
+    from vidit.tools.system import SystemControl, make_system_tools
+
+    perms = Permissions(Config(home), event_bus=EventBus(), prompter=lambda r: Decision.ALLOW_SESSION)
+    ctx = ToolContext(MemoryStore(home / "m.db"), Config(home), perms, None, lambda s: None, [])
+    tools = {t.name: t for t in make_system_tools(SystemControl(Path(tempfile.gettempdir())), home / "b")}
+    res = tools["open"].run("youtube", ctx)
+    assert res.ok, res.output  # never raises — degrades to a graceful message
+    # headless CI boxes can't open anything; Windows/desktop lands on the site
+    assert ("youtube.com" in res.output or "Opened" in res.output
+            or "Couldn't" in res.output), res.output
+
+
+def test_bubble_safe_renders_broken_messages(vidit: Vidit) -> None:
+    """A message that would break the markdown renderer shows as plain text."""
+    try:
+        from PyQt5.QtWidgets import QApplication
+    except Exception:  # noqa: BLE001 - headless box without Qt system libs
+        pytest.skip("Qt system libraries unavailable in this environment")
+    import os as _os
+
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt5.QtCore import QCoreApplication
+
+    if QCoreApplication.instance() is None:
+        QApplication(["vidit-test"])
+    vidit.config.set("model.backend", "echo")
+    from vidit.ui.chat_window import ChatWindow
+
+    win = ChatWindow(vidit)
+    poison = {"role": "assistant", "content": "\x00broken\x1b[31m", "created_at": time.time(), "id": 0}
+    html_out = win._bubble_safe(poison)
+    assert isinstance(html_out, str) and html_out  # something sensible came out
+    win.close()
